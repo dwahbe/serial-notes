@@ -181,7 +181,8 @@ actor TranscriptionService {
 
     func endSession(
         summarySettings: SummarySettings.Snapshot = .disabled,
-        keepAudioFiles: Bool = true
+        keepAudioFiles: Bool = true,
+        summaryCutoff: TimeInterval? = nil
     ) async {
         for side in AudioSide.allCases {
             do {
@@ -227,7 +228,8 @@ actor TranscriptionService {
             await spliceSummarySections(
                 sessionDirectory: directory,
                 header: finalHeader,
-                settings: summarySettings
+                settings: summarySettings,
+                summaryCutoff: summaryCutoff
             )
             if !keepAudioFiles {
                 // Must run after high-accuracy ASR and summary splice — both read the raw audio.
@@ -260,7 +262,8 @@ actor TranscriptionService {
     private func spliceSummarySections(
         sessionDirectory: URL,
         header: String,
-        settings: SummarySettings.Snapshot
+        settings: SummarySettings.Snapshot,
+        summaryCutoff: TimeInterval?
     ) async {
         guard settings.generateSummary || settings.generateActionItems else { return }
         // Prefer the prewarmed summarizer from startSession; fall back to a
@@ -272,8 +275,9 @@ actor TranscriptionService {
         guard fileText.hasPrefix(header) else { return }
 
         let body = String(fileText.dropFirst(header.count))
-        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBody.isEmpty else { return }
+        let summaryBody = TranscriptFormatter.summaryInput(from: body, cutoff: summaryCutoff)
+        let trimmedSummaryBody = summaryBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSummaryBody.isEmpty else { return }
 
         // Idempotency: if a previous endSession (or future regenerate-summary
         // call) already spliced sections in, skip rather than prepending a
@@ -283,7 +287,7 @@ actor TranscriptionService {
         }
 
         let result = await summarizer.summarize(
-            transcript: trimmedBody,
+            transcript: trimmedSummaryBody,
             generateSummary: settings.generateSummary,
             generateActionItems: settings.generateActionItems
         )

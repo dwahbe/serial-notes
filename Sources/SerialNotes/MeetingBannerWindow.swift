@@ -5,11 +5,15 @@ import SwiftUI
 final class MeetingBannerController {
     var onRecord: (@MainActor () -> Void)?
     var onDismiss: (@MainActor () -> Void)?
+    var onEndStop: (@MainActor () -> Void)?
+    var onEndKeepRecording: (@MainActor () -> Void)?
 
     private let panel: NSPanel
     private var autoDismissTask: Task<Void, Never>?
+    private var visiblePrompt: VisiblePrompt?
+    private var endPromptModel: MeetingEndPromptModel?
 
-    private static let bannerWidth: CGFloat = 300
+    fileprivate static let bannerWidth: CGFloat = 340
     private static let screenInset: CGFloat = 14
     private static let autoDismissAfter: Duration = .seconds(15)
     private static let showAnimationDuration: CFTimeInterval = 0.22
@@ -50,10 +54,9 @@ final class MeetingBannerController {
     // Owned by SwiftUI @State at the app root, so this never deinits in practice.
     // Skip teardown rather than fight the nonisolated-deinit rules.
 
-    func show(appName: String) {
-        let wasVisible = panel.isVisible
-
-        let view = MeetingBannerView(
+    func showStartPrompt(appName: String) {
+        endPromptModel = nil
+        let view = MeetingStartBannerView(
             appName: appName,
             onRecord: { [weak self] in
                 self?.hide()
@@ -64,6 +67,36 @@ final class MeetingBannerController {
                 self?.onDismiss?()
             }
         )
+        show(view: view, autoDismiss: true, prompt: .start)
+    }
+
+    func showEndPrompt(appName: String, remainingSeconds: Int) {
+        if visiblePrompt == .end, let endPromptModel {
+            endPromptModel.appName = appName
+            endPromptModel.remainingSeconds = remainingSeconds
+            repositionIfVisible()
+            return
+        }
+
+        let model = MeetingEndPromptModel(appName: appName, remainingSeconds: remainingSeconds)
+        endPromptModel = model
+        let view = MeetingEndBannerView(
+            model: model,
+            onStop: { [weak self] in
+                self?.hide()
+                self?.onEndStop?()
+            },
+            onKeepRecording: { [weak self] in
+                self?.hide()
+                self?.onEndKeepRecording?()
+            }
+        )
+        show(view: view, autoDismiss: false, prompt: .end)
+    }
+
+    private func show<V: View>(view: V, autoDismiss: Bool, prompt: VisiblePrompt) {
+        let wasVisible = panel.isVisible
+        visiblePrompt = prompt
 
         let hosting = NSHostingView(rootView: view)
         hosting.sizingOptions = [.intrinsicContentSize]
@@ -89,12 +122,19 @@ final class MeetingBannerController {
             }
         }
 
-        scheduleAutoDismiss()
+        if autoDismiss {
+            scheduleAutoDismiss()
+        } else {
+            autoDismissTask?.cancel()
+            autoDismissTask = nil
+        }
     }
 
     func hide() {
         autoDismissTask?.cancel()
         autoDismissTask = nil
+        visiblePrompt = nil
+        endPromptModel = nil
 
         guard panel.isVisible else { return }
 
@@ -122,8 +162,7 @@ final class MeetingBannerController {
 
     private func repositionIfVisible() {
         guard panel.isVisible else { return }
-        let height = (panel.contentView as? NSHostingView<MeetingBannerView>)?
-            .fittingSize.height ?? panel.frame.height
+        let height = panel.contentView?.fittingSize.height ?? panel.frame.height
         panel.setFrame(targetFrame(for: height), display: true)
     }
 
@@ -139,7 +178,23 @@ final class MeetingBannerController {
     }
 }
 
-private struct MeetingBannerView: View {
+private enum VisiblePrompt {
+    case start
+    case end
+}
+
+@Observable
+private final class MeetingEndPromptModel {
+    var appName: String
+    var remainingSeconds: Int
+
+    init(appName: String, remainingSeconds: Int) {
+        self.appName = appName
+        self.remainingSeconds = remainingSeconds
+    }
+}
+
+private struct MeetingStartBannerView: View {
     let appName: String
     let onRecord: @MainActor () -> Void
     let onDismiss: @MainActor () -> Void
@@ -147,41 +202,14 @@ private struct MeetingBannerView: View {
     @State private var isHovering = false
 
     var body: some View {
-        pill
-            .overlay(alignment: .topLeading) {
-                dismissButton
-                    .opacity(isHovering ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.12), value: isHovering)
-                    .allowsHitTesting(isHovering)
-            }
-            .padding(.top, 8)
-            .padding(.leading, 8)
-            .frame(width: 300, alignment: .leading)
-            .preferredColorScheme(.light)
-            .onHover { isHovering = $0 }
-    }
-
-    private var pill: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "waveform.circle.fill")
-                .font(.system(size: 28, weight: .regular))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .black)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Meeting detected")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.black)
-                    .lineLimit(1)
-                Text(appName)
-                    .font(.caption)
-                    .foregroundStyle(.black.opacity(0.6))
-                    .lineLimit(1)
-            }
-            .padding(.vertical, 14)
-
-            Spacer(minLength: 10)
-
+        BannerPill(
+            iconName: "waveform.circle.fill",
+            iconColor: .black,
+            title: "Meeting detected",
+            subtitle: appName,
+            backgroundColor: .white,
+            strokeColor: .black.opacity(0.08)
+        ) {
             Button(action: onRecord) {
                 Label("Record", systemImage: "record.circle.fill")
                     .font(.subheadline.weight(.semibold))
@@ -195,15 +223,17 @@ private struct MeetingBannerView: View {
             .padding(.trailing, 8)
             .padding(.vertical, 6)
         }
-        .padding(.leading, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
-        )
+            .overlay(alignment: .topLeading) {
+                dismissButton
+                    .opacity(isHovering ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: isHovering)
+                    .allowsHitTesting(isHovering)
+            }
+            .padding(.top, 8)
+            .padding(.leading, 8)
+            .frame(width: MeetingBannerController.bannerWidth, alignment: .leading)
+            .preferredColorScheme(.light)
+            .onHover { isHovering = $0 }
     }
 
     private var dismissButton: some View {
@@ -217,5 +247,94 @@ private struct MeetingBannerView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Dismiss")
         .offset(x: -6, y: -6)
+    }
+}
+
+private struct MeetingEndBannerView: View {
+    @Bindable var model: MeetingEndPromptModel
+    let onStop: @MainActor () -> Void
+    let onKeepRecording: @MainActor () -> Void
+
+    var body: some View {
+        BannerPill(
+            iconName: "stop.circle.fill",
+            iconColor: Color(red: 0.78, green: 0.08, blue: 0.08),
+            title: "\(model.appName) call ended",
+            subtitle: "Stopping in \(model.remainingSeconds)s",
+            backgroundColor: Color(red: 1.0, green: 0.965, blue: 0.955),
+            strokeColor: Color(red: 0.78, green: 0.08, blue: 0.08).opacity(0.22),
+            spacerMinLength: 8
+        ) {
+            Button(action: onKeepRecording) {
+                Text("Keep Recording")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.black.opacity(0.76))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onStop) {
+                Label("Stop Now", systemImage: "stop.fill")
+                    .font(.caption.weight(.semibold))
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color(red: 0.78, green: 0.08, blue: 0.08)))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 8)
+            .padding(.vertical, 6)
+        }
+        .padding(.top, 8)
+        .padding(.leading, 8)
+        .frame(width: MeetingBannerController.bannerWidth, alignment: .leading)
+        .preferredColorScheme(.light)
+    }
+}
+
+private struct BannerPill<Trailing: View>: View {
+    let iconName: String
+    let iconColor: Color
+    let title: String
+    let subtitle: String
+    let backgroundColor: Color
+    let strokeColor: Color
+    var spacerMinLength: CGFloat = 10
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 28, weight: .regular))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, iconColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.black.opacity(0.6))
+                    .lineLimit(1)
+            }
+            .padding(.vertical, 14)
+
+            Spacer(minLength: spacerMinLength)
+
+            trailing
+        }
+        .padding(.leading, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(backgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(strokeColor, lineWidth: 1)
+        )
     }
 }

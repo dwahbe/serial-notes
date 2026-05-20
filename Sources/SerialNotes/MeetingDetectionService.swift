@@ -8,24 +8,37 @@ struct DetectedMeeting: Equatable {
     let detectedAt: Date
 }
 
+struct KnownMeetingApp: Equatable, Sendable {
+    let displayName: String
+    let coreAudioBundleSubstrings: [String]
+}
+
 @MainActor @Observable
 final class MeetingDetectionService {
-    nonisolated static let knownMeetingApps: [String: String] = [
-        "us.zoom.xos": "Zoom",
-        "com.microsoft.teams": "Microsoft Teams",
-        "com.microsoft.teams2": "Microsoft Teams",
-        "com.apple.FaceTime": "FaceTime",
-        "com.tinyspeck.slackmacgap": "Slack",
-        "com.webex.meetingmanager": "Webex",
-        "com.hnc.Discord": "Discord",
+    nonisolated static let knownMeetingApps: [String: KnownMeetingApp] = [
+        "us.zoom.xos": KnownMeetingApp(displayName: "Zoom", coreAudioBundleSubstrings: ["zoom"]),
+        "com.microsoft.teams": KnownMeetingApp(displayName: "Microsoft Teams", coreAudioBundleSubstrings: ["teams"]),
+        "com.microsoft.teams2": KnownMeetingApp(displayName: "Microsoft Teams", coreAudioBundleSubstrings: ["teams"]),
+        "com.apple.FaceTime": KnownMeetingApp(displayName: "FaceTime", coreAudioBundleSubstrings: ["facetime", "avconference"]),
+        "com.tinyspeck.slackmacgap": KnownMeetingApp(displayName: "Slack", coreAudioBundleSubstrings: ["slack", "tinyspeck"]),
+        "com.webex.meetingmanager": KnownMeetingApp(displayName: "Webex", coreAudioBundleSubstrings: ["webex"]),
+        "com.hnc.Discord": KnownMeetingApp(displayName: "Discord", coreAudioBundleSubstrings: ["discord"]),
     ]
 
     private(set) var detectedMeeting: DetectedMeeting?
 
     @ObservationIgnored var onRecordRequested: (() -> Void)?
+    @ObservationIgnored var onStopRecordingRequested: ((RecordingStopReason) -> Void)?
 
     @ObservationIgnored private weak var recordingState: RecordingState?
+    @ObservationIgnored private weak var meetingSettings: MeetingSettings?
     @ObservationIgnored private let banner = MeetingBannerController()
+    @ObservationIgnored private let audioActivityMonitor = MeetingAudioActivityMonitor()
+    @ObservationIgnored private var callEndState = CallEndStateMachine()
+    @ObservationIgnored private var callEndGraceTask: Task<Void, Never>?
+    @ObservationIgnored private var callEndCountdownTask: Task<Void, Never>?
+    @ObservationIgnored private var neverObservedActiveTask: Task<Void, Never>?
+    @ObservationIgnored private var meetingDiagnostics = MeetingSessionDiagnostics()
     @ObservationIgnored private var runningMeetingApps: Set<String> = []
     @ObservationIgnored private var activationOrder: [String] = []  // most recent first
     @ObservationIgnored private var suppressedBundleIDs: Set<String> = []
@@ -47,13 +60,23 @@ final class MeetingDetectionService {
     // destruct it many times.
     @ObservationIgnored private let listenerCleanup = ListenerCleanup()
 
-    init(recordingState: RecordingState) {
+    init(recordingState: RecordingState, meetingSettings: MeetingSettings) {
         self.recordingState = recordingState
+        self.meetingSettings = meetingSettings
         banner.onRecord = { [weak self] in
             self?.onRecordRequested?()
         }
         banner.onDismiss = { [weak self] in
             self?.dismissCurrent()
+        }
+        banner.onEndStop = { [weak self] in
+            self?.stopFromEndPrompt()
+        }
+        banner.onEndKeepRecording = { [weak self] in
+            self?.keepRecordingFromEndPrompt()
+        }
+        audioActivityMonitor.onActivityChanged = { [weak self] state in
+            self?.handleMeetingAudioActivity(state)
         }
         seedRunningApps()
         registerWorkspaceObservers()
@@ -103,6 +126,12 @@ final class MeetingDetectionService {
     }
 
     func recordingStateChanged() {
+        if recordingState?.isRecording == true {
+            beginCallEndMonitoringIfNeeded()
+        } else {
+            endCallEndMonitoring()
+        }
+
         // User stopped recording while still in a call (mic still active) → treat
         // as an implicit dismiss so we don't immediately re-prompt. They made a
         // choice to stop.
@@ -113,6 +142,186 @@ final class MeetingDetectionService {
             userRejectedThisWindow = true
         }
         reevaluate()
+    }
+
+    // MARK: - Call End Monitoring
+
+    private func beginCallEndMonitoringIfNeeded() {
+        guard meetingSettings?.autoStopAfterCallEnds == true else {
+            return
+        }
+        guard let bundleID = lockedBundleID,
+              let appName = Self.knownMeetingApps[bundleID]?.displayName else {
+            return
+        }
+
+        let association = MeetingRecordingAssociation(
+            appName: appName,
+            bundleIdentifier: bundleID,
+            startedAt: Date()
+        )
+        meetingDiagnostics = MeetingSessionDiagnostics(association: association)
+        _ = callEndState.startRecording(
+            association: association,
+            autoStopEnabled: true
+        )
+        audioActivityMonitor.startMonitoring(association: association)
+        scheduleNeverObservedActiveWarning()
+    }
+
+    private func endCallEndMonitoring() {
+        if meetingDiagnostics.shouldWriteSidecar {
+            recordingState?.attachMeetingDiagnosticsForCurrentStop(meetingDiagnostics)
+        }
+        callEndGraceTask?.cancel()
+        callEndGraceTask = nil
+        callEndCountdownTask?.cancel()
+        callEndCountdownTask = nil
+        neverObservedActiveTask?.cancel()
+        neverObservedActiveTask = nil
+        audioActivityMonitor.stopMonitoring()
+        handleCallEndEffects(callEndState.stopRecording())
+        meetingDiagnostics = MeetingSessionDiagnostics()
+    }
+
+    private func handleMeetingAudioActivity(_ state: MeetingAudioActivityState) {
+        recordMeetingAudioActivity(state)
+        handleCallEndEffects(callEndState.receiveActivity(state))
+    }
+
+    private func handleCallEndEffects(_ effects: [CallEndStateMachine.Effect]) {
+        for effect in effects {
+            switch effect {
+            case .startGraceTimer(let inactiveAt):
+                scheduleCallEndGraceTimer(inactiveAt: inactiveAt)
+            case .cancelEndTimers:
+                callEndGraceTask?.cancel()
+                callEndGraceTask = nil
+                callEndCountdownTask?.cancel()
+                callEndCountdownTask = nil
+            case .startCountdown(let inactiveAt, let remainingSeconds):
+                markCallEndPromptShown(at: Date())
+                startCallEndCountdown(inactiveAt: inactiveAt, remainingSeconds: remainingSeconds)
+            case .updateCountdown(let remainingSeconds):
+                if let association = callEndState.association {
+                    banner.showEndPrompt(appName: association.appName, remainingSeconds: remainingSeconds)
+                }
+            case .hidePrompt:
+                banner.hide()
+            case .stop(let reason):
+                meetingDiagnostics.stopReason = reason.diagnosticsValue
+                switch reason {
+                case .callEndedAuto:
+                    markAutoStopFired(at: Date())
+                case .callEndedUserConfirmed:
+                    markUserConfirmedCallEndStop(at: Date())
+                case .manual, .appQuit:
+                    break
+                }
+                onStopRecordingRequested?(reason)
+            case .stopMonitoring:
+                neverObservedActiveTask?.cancel()
+                neverObservedActiveTask = nil
+                audioActivityMonitor.stopMonitoring()
+            case .logNeverObservedActive(let date):
+                markNeverObservedMeetingAudioActive(at: date)
+            }
+        }
+    }
+
+    private func scheduleCallEndGraceTimer(inactiveAt: Date) {
+        callEndGraceTask?.cancel()
+        callEndGraceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.handleCallEndEffects(
+                self?.callEndState.graceTimerFired(inactiveAt: inactiveAt) ?? []
+            )
+        }
+    }
+
+    private func startCallEndCountdown(inactiveAt: Date, remainingSeconds: Int) {
+        guard let association = callEndState.association else { return }
+        callEndCountdownTask?.cancel()
+        banner.showEndPrompt(appName: association.appName, remainingSeconds: remainingSeconds)
+        callEndCountdownTask = Task { @MainActor [weak self] in
+            var remaining = remainingSeconds
+            while remaining > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                remaining -= 1
+                if remaining > 0 {
+                    self?.handleCallEndEffects(
+                        self?.callEndState.countdownTick(remainingSeconds: remaining) ?? []
+                    )
+                }
+            }
+            self?.handleCallEndEffects(self?.callEndState.countdownFinished() ?? [])
+        }
+    }
+
+    private func scheduleNeverObservedActiveWarning() {
+        neverObservedActiveTask?.cancel()
+        neverObservedActiveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { return }
+            self?.handleCallEndEffects(
+                self?.callEndState.neverObservedTimerFired(at: Date()) ?? []
+            )
+        }
+    }
+
+    private func stopFromEndPrompt() {
+        handleCallEndEffects(callEndState.stopNow())
+    }
+
+    private func keepRecordingFromEndPrompt() {
+        markKeptRecordingAfterCallEnd(at: Date())
+        handleCallEndEffects(callEndState.keepRecording())
+    }
+
+    private func recordMeetingAudioActivity(_ state: MeetingAudioActivityState) {
+        switch state {
+        case .active(let snapshot):
+            meetingDiagnostics.lastMatchedProcesses = snapshot.matchedProcesses
+            if meetingDiagnostics.firstActiveAt == nil {
+                meetingDiagnostics.firstActiveAt = snapshot.observedAt
+            }
+        case .inactive(let snapshot):
+            meetingDiagnostics.lastMatchedProcesses = snapshot.matchedProcesses
+            if meetingDiagnostics.firstInactiveAt == nil {
+                meetingDiagnostics.firstInactiveAt = snapshot.observedAt
+            }
+        case .unknown(let reason, _):
+            meetingDiagnostics.lastUnknownReason = reason
+        }
+    }
+
+    private func markCallEndPromptShown(at date: Date) {
+        if meetingDiagnostics.promptShownAt == nil {
+            meetingDiagnostics.promptShownAt = date
+        }
+    }
+
+    private func markAutoStopFired(at date: Date) {
+        meetingDiagnostics.autoStopFiredAt = date
+    }
+
+    private func markUserConfirmedCallEndStop(at date: Date) {
+        meetingDiagnostics.userConfirmedStopAt = date
+    }
+
+    private func markKeptRecordingAfterCallEnd(at date: Date) {
+        meetingDiagnostics.keptRecordingAt = date
+    }
+
+    private func markNeverObservedMeetingAudioActive(at date: Date) {
+        guard meetingDiagnostics.firstActiveAt == nil,
+              meetingDiagnostics.neverObservedActiveWarningAt == nil else {
+            return
+        }
+        meetingDiagnostics.neverObservedActiveWarningAt = date
+        NSLog("[SerialNotes/MeetingAudio] never observed active CoreAudio process for associated meeting")
     }
 
     // MARK: - NSWorkspace
@@ -342,7 +551,7 @@ final class MeetingDetectionService {
         // keep it (even if something else became frontmost).
         if let locked = lockedBundleID {
             if runningMeetingApps.contains(locked),
-               let appName = Self.knownMeetingApps[locked] {
+               let appName = Self.knownMeetingApps[locked]?.displayName {
                 applyDetection(bundleID: locked, appName: appName)
                 return
             }
@@ -354,7 +563,7 @@ final class MeetingDetectionService {
 
         // No prior lock: this is the start of a mic-active window (or a fresh
         // reevaluate after a reset). Pick once and lock.
-        if let bundleID = selectMeetingApp(), let appName = Self.knownMeetingApps[bundleID] {
+        if let bundleID = selectMeetingApp(), let appName = Self.knownMeetingApps[bundleID]?.displayName {
             lockedBundleID = bundleID
             applyDetection(bundleID: bundleID, appName: appName)
         } else {
@@ -372,7 +581,7 @@ final class MeetingDetectionService {
         }
         if lastNotifiedBundleID != bundleID {
             lastNotifiedBundleID = bundleID
-            banner.show(appName: appName)
+            banner.showStartPrompt(appName: appName)
         }
     }
 

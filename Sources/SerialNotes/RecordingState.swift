@@ -14,6 +14,8 @@ final class RecordingState {
     private var timer: Timer?
     private var startDate: Date?
     private var currentSessionDir: URL?
+    @ObservationIgnored private var finalizationTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingMeetingDiagnostics: MeetingSessionDiagnostics?
     private let captureService = AudioCaptureService()
     let transcriptionService = TranscriptionService()
 
@@ -23,7 +25,14 @@ final class RecordingState {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+    var hasActiveOrFinalizingSession: Bool {
+        isRecording || finalizationTask != nil
+    }
+
     func start(storageDirectory: URL) async {
+        if hasActiveOrFinalizingSession {
+            await stopAndWait(reason: .manual)
+        }
         await stopCapture()
 
         do {
@@ -95,41 +104,86 @@ final class RecordingState {
         }
     }
 
-    func stop() {
+    func stop(reason: RecordingStopReason = .manual) {
+        Task { await stopAndWait(reason: reason) }
+    }
+
+    func stopAndWait(reason: RecordingStopReason = .manual) async {
+        if let finalizationTask {
+            // Preserve the reason that started finalization. If app quit races
+            // with an already-fired auto-stop, quit should wait for the save
+            // rather than relabel the session after teardown has begun.
+            await finalizationTask.value
+            return
+        }
+        guard let context = beginStop(reason: reason) else { return }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.finishStop(context)
+        }
+        finalizationTask = task
+        await task.value
+        finalizationTask = nil
+    }
+
+    private func beginStop(reason: RecordingStopReason) -> StopContext? {
+        guard isRecording else { return nil }
+
         isRecording = false
         timer?.invalidate()
         timer = nil
         let sessionStart = startDate
         let sessionDir = currentSessionDir
+        let summaryCutoff = Self.summaryCutoff(for: reason, sessionStart: sessionStart)
         startDate = nil
         currentSessionDir = nil
         onRecordingChange?()
         let summarySnapshot = summarySettings?.snapshot() ?? .disabled
         let keepAudioFiles = storageSettings?.saveAudioFiles ?? true
-        Task { [weak self] in
-            guard let self else { return }
-            await self.stopCapture()
-            let stats = self.captureService.currentStats()
-            await self.transcriptionService.endSession(
-                summarySettings: summarySnapshot,
-                keepAudioFiles: keepAudioFiles
-            )
-            self.finalizeSession(
-                sessionDir: sessionDir,
-                sessionStart: sessionStart,
-                stats: stats
-            )
-        }
+        var diagnostics = pendingMeetingDiagnostics
+        diagnostics?.stopReason = reason.diagnosticsValue
+        pendingMeetingDiagnostics = nil
+        return StopContext(
+            sessionDir: sessionDir,
+            sessionStart: sessionStart,
+            stopReason: reason,
+            summarySettings: summarySnapshot,
+            keepAudioFiles: keepAudioFiles,
+            summaryCutoff: summaryCutoff,
+            meetingDiagnostics: diagnostics
+        )
+    }
+
+    private func finishStop(_ context: StopContext) async {
+        await stopCapture()
+        let stats = captureService.currentStats()
+        await transcriptionService.endSession(
+            summarySettings: context.summarySettings,
+            keepAudioFiles: context.keepAudioFiles,
+            summaryCutoff: context.summaryCutoff
+        )
+        finalizeSession(
+            context: context,
+            stats: stats
+        )
     }
 
     private func finalizeSession(
-        sessionDir: URL?,
-        sessionStart: Date?,
+        context: StopContext,
         stats: AudioCaptureStats
     ) {
+        let sessionDir = context.sessionDir
+        let sessionStart = context.sessionStart
         guard let sessionDir, let sessionStart else { return }
 
-        writeSessionJSON(sessionDir: sessionDir, sessionStart: sessionStart, stats: stats)
+        writeSessionJSON(
+            sessionDir: sessionDir,
+            sessionStart: sessionStart,
+            stats: stats,
+            context: context
+        )
+        writeMeetingAudioDiagnosticsIfNeeded(sessionDir: sessionDir, diagnostics: context.meetingDiagnostics)
 
         // Only warn when zero buffers arrived for a recording long enough that
         // we'd have expected the tap to fire (~12 buffers/sec). Short test
@@ -145,14 +199,22 @@ final class RecordingState {
         }
     }
 
-    private func writeSessionJSON(sessionDir: URL, sessionStart: Date, stats: AudioCaptureStats) {
+    private func writeSessionJSON(
+        sessionDir: URL,
+        sessionStart: Date,
+        stats: AudioCaptureStats,
+        context: StopContext
+    ) {
         let payload = SessionDiagnostics(
             startedAt: sessionStart,
             endedAt: Date(),
+            stopReason: context.stopReason.diagnosticsValue,
+            summaryCutoffSeconds: context.summaryCutoff,
             capturePath: stats.path?.rawValue ?? "unknown",
             mic: stats.mic,
             system: stats.system,
-            enrolledProfiles: voiceProfileStore?.profiles.map { $0.name } ?? []
+            enrolledProfiles: voiceProfileStore?.profiles.map { $0.name } ?? [],
+            meeting: context.meetingDiagnostics
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -165,6 +227,29 @@ final class RecordingState {
             // Diagnostics-only — don't surface in UI, but log so debugging
             // a missing session.json doesn't look like nothing happened.
             NSLog("[SerialNotes/RecordingState] failed to write session.json: %@",
+                  error.localizedDescription)
+        }
+    }
+
+    func attachMeetingDiagnosticsForCurrentStop(_ diagnostics: MeetingSessionDiagnostics?) {
+        pendingMeetingDiagnostics = diagnostics
+    }
+
+    private func writeMeetingAudioDiagnosticsIfNeeded(
+        sessionDir: URL,
+        diagnostics: MeetingSessionDiagnostics?
+    ) {
+        guard let diagnostics, diagnostics.shouldWriteSidecar else { return }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let url = sessionDir.appendingPathComponent("meeting-audio-diagnostics.json")
+        do {
+            let data = try encoder.encode(diagnostics)
+            try data.write(to: url, options: [.atomic])
+        } catch {
+            NSLog("[SerialNotes/RecordingState] failed to write meeting-audio-diagnostics.json: %@",
                   error.localizedDescription)
         }
     }
@@ -193,6 +278,17 @@ final class RecordingState {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter.string(from: Date())
     }
+
+    private static func summaryCutoff(
+        for reason: RecordingStopReason,
+        sessionStart: Date?
+    ) -> TimeInterval? {
+        guard let sessionStart,
+              let cutoffDate = reason.summaryCutoffDate else {
+            return nil
+        }
+        return max(0, cutoffDate.timeIntervalSince(sessionStart))
+    }
 }
 
 /// Written as `session.json` alongside the WAVs so we can tell — after the
@@ -201,8 +297,21 @@ final class RecordingState {
 private struct SessionDiagnostics: Codable {
     let startedAt: Date
     let endedAt: Date
+    let stopReason: String
+    let summaryCutoffSeconds: TimeInterval?
     let capturePath: String
     let mic: AudioStreamStats
     let system: AudioStreamStats
     let enrolledProfiles: [String]
+    let meeting: MeetingSessionDiagnostics?
+}
+
+private struct StopContext: Sendable {
+    let sessionDir: URL?
+    let sessionStart: Date?
+    let stopReason: RecordingStopReason
+    let summarySettings: SummarySettings.Snapshot
+    let keepAudioFiles: Bool
+    let summaryCutoff: TimeInterval?
+    let meetingDiagnostics: MeetingSessionDiagnostics?
 }

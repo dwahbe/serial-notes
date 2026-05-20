@@ -206,6 +206,7 @@ private struct OtherProfileRow: View {
 private struct GeneralSettingsTab: View {
     @Environment(StorageSettings.self) private var storageSettings
     @Environment(SummarySettings.self) private var summarySettings
+    @Environment(MeetingSettings.self) private var meetingSettings
 
     private var foundationModelsAvailable: Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
@@ -215,6 +216,7 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         @Bindable var summary = summarySettings
         @Bindable var storage = storageSettings
+        @Bindable var meeting = meetingSettings
 
         Form {
             Section {
@@ -257,6 +259,16 @@ private struct GeneralSettingsTab: View {
                 }
             }
             .disabled(!foundationModelsAvailable)
+
+            Section {
+                Toggle("Stop recording after call ends", isOn: $meeting.autoStopAfterCallEnds)
+            } header: {
+                Text("Meetings")
+            } footer: {
+                Text("When on, Serial Notes prompts when the associated call ends and stops automatically after a short countdown unless you keep recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()

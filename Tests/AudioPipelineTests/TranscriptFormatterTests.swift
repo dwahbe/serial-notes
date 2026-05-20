@@ -30,4 +30,34 @@ struct TranscriptFormatterTests {
         #expect(entry.hasPrefix("**Person 1** (00:01:05):\n\n"))
         #expect(entry.contains("Third sentence closes the first paragraph naturally.\n\nFourth sentence starts a new paragraph"))
     }
+
+    @Test("Summary input excludes entries after cutoff")
+    func summaryInputExcludesEntriesAfterCutoff() {
+        let body = """
+        **Person 1** (00:00:05): Call content.
+
+        **You** (00:00:12): More call content.
+
+        **You** (00:00:35): Post-call hallway chatter.
+
+        """
+
+        let filtered = TranscriptFormatter.summaryInput(from: body, cutoff: 20)
+
+        #expect(filtered.contains("Call content."))
+        #expect(filtered.contains("More call content."))
+        #expect(!filtered.contains("Post-call hallway chatter."))
+    }
+
+    @Test("Summary input keeps full body without cutoff")
+    func summaryInputKeepsFullBodyWithoutCutoff() {
+        let body = """
+        **Person 1** (00:00:05): Call content.
+
+        **You** (00:00:35): Post-call hallway chatter.
+
+        """
+
+        #expect(TranscriptFormatter.summaryInput(from: body, cutoff: nil) == body)
+    }
 }

@@ -67,6 +67,39 @@ enum TranscriptFormatter {
         return "\(prefix):\n\n\(body)\n\n"
     }
 
+    static func summaryInput(from body: String, cutoff: TimeInterval?) -> String {
+        guard let cutoff else { return body }
+
+        let lines = body.components(separatedBy: "\n")
+        var included: [String] = []
+        var current: [String] = []
+        var currentTimestamp: TimeInterval?
+
+        func flushCurrent() {
+            guard !current.isEmpty else { return }
+            if let timestamp = currentTimestamp {
+                if timestamp <= cutoff {
+                    included.append(contentsOf: current)
+                }
+            } else {
+                included.append(contentsOf: current)
+            }
+            current.removeAll(keepingCapacity: true)
+            currentTimestamp = nil
+        }
+
+        for line in lines {
+            if let timestamp = timestampFromEntryHeader(line) {
+                flushCurrent()
+                currentTimestamp = timestamp
+            }
+            current.append(line)
+        }
+        flushCurrent()
+
+        return included.joined(separator: "\n")
+    }
+
     static func formatTimestamp(_ seconds: TimeInterval) -> String {
         let totalSeconds = max(0, Int(seconds))
         let hours = totalSeconds / 3600
@@ -156,5 +189,17 @@ enum TranscriptFormatter {
             paragraphs.append(current.joined(separator: " "))
         }
         return paragraphs
+    }
+
+    private static func timestampFromEntryHeader(_ line: String) -> TimeInterval? {
+        guard line.hasPrefix("**"),
+              let open = line.range(of: " ("),
+              let close = line.range(of: "):", range: open.upperBound..<line.endIndex) else {
+            return nil
+        }
+        let raw = String(line[open.upperBound..<close.lowerBound])
+        let parts = raw.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return TimeInterval(parts[0] * 3600 + parts[1] * 60 + parts[2])
     }
 }

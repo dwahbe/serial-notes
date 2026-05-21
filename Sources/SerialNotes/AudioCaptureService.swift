@@ -289,7 +289,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
         let micEng = AVAudioEngine()
         let micInputNode = micEng.inputNode
-        enableVoiceProcessing(on: micInputNode)
+        disableVoiceProcessing(on: micInputNode)
 
         let micHwFormat = micInputNode.outputFormat(forBus: 0)
         guard micHwFormat.channelCount > 0, micHwFormat.sampleRate > 0 else {
@@ -321,21 +321,21 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         micEngine = micEng
     }
 
-    private func enableVoiceProcessing(on inputNode: AVAudioInputNode) {
-        do {
-            if !inputNode.isVoiceProcessingEnabled {
-                // System audio is captured on its own stream; mic voice processing reduces playback bleed into the mic track.
-                try inputNode.setVoiceProcessingEnabled(true)
+    private func disableVoiceProcessing(on inputNode: AVAudioInputNode) {
+        // VPIO engages the system Voice Processing AU, which ducks the default
+        // output stream so AEC can use it as a reference. That ducking is
+        // audible as Zoom/Meet/etc. dropping in volume during recording. We
+        // capture system audio on its own tap stream and transcribe both sides
+        // independently, so AEC on the mic isn't needed.
+        if inputNode.isVoiceProcessingEnabled {
+            do {
+                try inputNode.setVoiceProcessingEnabled(false)
+            } catch {
+                NSLog("[SerialNotes/Capture] could not disable mic voice processing: \(error.localizedDescription)")
             }
-            let enabled = inputNode.isVoiceProcessingEnabled
-            statsLock.withLock { $0.mic.voiceProcessingEnabled = enabled }
-            if enabled {
-                NSLog("[SerialNotes/Capture] mic voice processing enabled")
-            }
-        } catch {
-            statsLock.withLock { $0.mic.voiceProcessingEnabled = false }
-            NSLog("[SerialNotes/Capture] mic voice processing unavailable: \(error.localizedDescription)")
         }
+        let enabled = inputNode.isVoiceProcessingEnabled
+        statsLock.withLock { $0.mic.voiceProcessingEnabled = enabled }
     }
 
     // MARK: - Cleanup

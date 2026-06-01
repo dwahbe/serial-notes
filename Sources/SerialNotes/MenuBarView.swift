@@ -34,7 +34,14 @@ struct MenuBarView: View {
             }
             .padding(20)
             .frame(width: 280)
-            .animation(.default, value: recordingState.isRecording)
+            // Do NOT animate this size change. MenuBarExtra(.window) sizes its
+            // backing NSWindow to the content's committed fitting size; animating
+            // the idle↔recording swap feeds it an in-flight (Core Animation)
+            // size that it never reads as a discrete layout change, so the window
+            // stays at the taller idle height. The shorter recording content then
+            // leaves a transparent dead zone (apps show through) plus a detached
+            // drop shadow at the stale frame. Instant resize keeps the window
+            // glued to the content.
         }
         // Keep controls bright when Settings (or any other window) is key —
         // otherwise the popover renders as an inactive window and the

@@ -12,7 +12,10 @@
 - Popover width: 280pt
 - Content padding: 20pt
 - Vertical spacing: 16pt between sections
-- State transitions use `.default` animation
+- State transitions (idle↔recording) resize the popover instantly — do **not**
+  animate the root size. `MenuBarExtra(.window)` won't resize its NSWindow off an
+  animated size change, which leaves a transparent dead zone + detached shadow
+  when the shorter recording layout is shown. See `MenuBarView.body`.
 
 ## Liquid Glass Rules
 

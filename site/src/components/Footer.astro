@@ -1,0 +1,20 @@
+---
+import Logo from "./Logo.astro";
+import { SITE } from "../consts";
+---
+
+<footer class="border-t border-line">
+  <div class="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+    <div class="flex flex-col gap-2">
+      <Logo />
+      <p class="text-[13px] text-faint">
+        Built by <a href={SITE.authors[0].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[0].name}</a> and <a href={SITE.authors[1].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[1].name}</a>
+      </p>
+    </div>
+
+    <nav class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-muted">
+      <a href={SITE.download} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-ink">Download</a>
+      <a href={SITE.github} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-ink">GitHub</a>
+    </nav>
+  </div>
+</footer>

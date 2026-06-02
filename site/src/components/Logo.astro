@@ -1,0 +1,29 @@
+---
+// The Serial Notes mark: a black tile holding the menu bar glyph —
+// a waveform inside a circle (matches the app's `waveform.circle` icon).
+interface Props {
+  withWordmark?: boolean;
+  class?: string;
+}
+const { withWordmark = true, class: className = "" } = Astro.props;
+---
+
+<a href="/" class={`group inline-flex items-center gap-2.5 ${className}`} aria-label="Serial Notes home">
+  <span class="grid h-7 w-7 place-items-center rounded-[7px] bg-ink text-white shadow-sm">
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.1" />
+      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+        <line x1="4.6" y1="6" x2="4.6" y2="10" />
+        <line x1="6.3" y1="4.4" x2="6.3" y2="11.6" />
+        <line x1="8" y1="3.6" x2="8" y2="12.4" />
+        <line x1="9.7" y1="5" x2="9.7" y2="11" />
+        <line x1="11.4" y1="5.8" x2="11.4" y2="10.2" />
+      </g>
+    </svg>
+  </span>
+  {
+    withWordmark && (
+      <span class="text-[15px] font-semibold tracking-tight text-ink">Serial Notes</span>
+    )
+  }
+</a>

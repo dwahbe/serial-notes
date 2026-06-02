@@ -98,6 +98,19 @@ On first launch, models are prefetched in the background from Hugging Face (~1 G
 - FluidAudio models are downloaded once from Hugging Face; Apple's Foundation Models base model is managed by the OS. After both are present, nothing leaves your machine
 - Audio is retained indefinitely on-device (delete session folders to clean up)
 
+## Marketing site
+
+The marketing site lives in [`site/`](site/) — a self-contained Astro + Tailwind v4
+project (bun). It deploys to Vercel with the **Root Directory set to `site/`** and is
+**not** part of the macOS app build.
+
+```bash
+cd site
+bun install
+bun run dev      # localhost:4321
+bun run build    # → site/dist/
+```
+
 ## License
 
 MIT

@@ -1,0 +1,107 @@
+---
+import { SITE } from "../consts";
+import { formatStars } from "../scripts/githubStars";
+
+// Repo "owner/name" parsed from the GitHub URL, used for the stars API +
+// passed to the client script via data-repo so there's no second source.
+const repo = new URL(SITE.github).pathname.replace(/^\/|\/$/g, "");
+
+// Bake an initial star count at build time so it renders without JS and avoids
+// a flash. The client script refreshes it to the live value on page load.
+let stars: number | null = null;
+try {
+  const res = await fetch(`https://api.github.com/repos/${repo}`, {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (typeof data?.stargazers_count === "number") stars = data.stargazers_count;
+  }
+} catch {
+  // Offline build — the client-side fetch fills in the count.
+}
+---
+
+<!-- full-bleed: black background + inverted grid spill past the centered column -->
+<section class="relative left-1/2 w-screen -translate-x-1/2 border-t border-line">
+  <div class="relative overflow-hidden bg-ink text-white">
+    <!-- faint inverted grid — drifts at ~0.75× scroll for subtle depth (see script below) -->
+    <div
+      id="closing-grid"
+      class="pointer-events-none absolute inset-0 opacity-[0.07] [background-image:linear-gradient(to_right,#fff_1px,transparent_1px),linear-gradient(to_bottom,#fff_1px,transparent_1px)] [background-size:64px_64px] [background-position:50vw_-1px] [will-change:background-position]"
+    >
+    </div>
+
+    <div class="relative mx-auto flex max-w-6xl flex-col items-center px-5 py-20 text-center sm:px-8 sm:py-28">
+      <div class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[13px] font-medium text-white/70">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="18" height="11" x="3" y="11" rx="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        Private by design
+      </div>
+
+      <h2 class="tracking-tightest mt-6 max-w-2xl text-balance text-4xl font-semibold leading-[1.05] sm:text-5xl">
+        Your audio never leaves your Mac
+      </h2>
+      <p class="mt-5 max-w-lg text-pretty text-lg leading-relaxed text-white/65">
+        No accounts. No servers. No telemetry.<br /> Serial Notes works fully
+        offline.
+      </p>
+
+      <div class="mt-9 flex flex-col items-center gap-3 sm:flex-row">
+        <a
+          href={SITE.download}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-6 py-3 text-[15px] font-medium text-ink transition-transform hover:-translate-y-0.5 hover:bg-white/90 sm:w-auto"
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path
+              d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
+            ></path>
+          </svg>
+          Download for macOS
+        </a>
+        <a
+          id="github-star-link"
+          href={SITE.github}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-repo={repo}
+          class="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/20 px-6 py-3 text-[15px] font-medium text-white transition-colors hover:bg-white/10 sm:w-auto"
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path
+              d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 6.844c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+            ></path>
+          </svg>
+          Star on GitHub
+          <span
+            data-star-count
+            hidden={stars === null}
+            class="inline-flex items-center gap-1 rounded-md bg-white/10 px-1.5 py-[3px] text-[13px] font-medium tabular-nums text-white/80"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path
+                d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.401 8.169L12 18.896l-7.335 3.86 1.401-8.169L.132 9.21l8.2-1.192z"
+              ></path>
+            </svg>
+            <span data-star-number>{stars !== null ? formatStars(stars) : ""}</span>
+          </span>
+        </a>
+      </div>
+
+      <p class="mt-5 text-[13px] text-white/40">Free &amp; open source · No account, no cloud</p>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { initGridParallax } from "../scripts/gridParallax";
+  import { initGithubStars } from "../scripts/githubStars";
+  const grid = document.getElementById("closing-grid");
+  if (grid) initGridParallax(grid);
+  const starLink = document.getElementById("github-star-link");
+  if (starLink) initGithubStars(starLink);
+</script>

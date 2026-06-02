@@ -1,4 +1,38 @@
+# ─── macOS ───
+.DS_Store
+
+# ─── Swift / SwiftPM / Xcode ───
 .build/
 .swiftpm/
-/.claude/worktrees
-.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+# Note: Package.resolved is intentionally committed to lock dependency versions.
+
+# ─── Editors / IDEs ───
+.vscode/
+.idea/
+*.swp
+*~
+
+# ─── Claude Code ───
+# Worktrees + local-only config. Shared .claude/settings.json or commands/ stay tracked.
+/.claude/worktrees/
+**/.claude/launch.json
+**/.claude/settings.local.json
+
+# ─── Node / Astro marketing site (see site/) ───
+node_modules/
+dist/
+.astro/
+.vercel/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Environment / secrets ───
+.env
+.env.*
+!.env.example

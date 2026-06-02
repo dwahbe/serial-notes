@@ -1,0 +1,62 @@
+---
+// A faux "exported .md" window — communicates the whole product loop:
+// record a meeting → on-device transcript → clean Markdown saved to your folder.
+---
+
+<div class="relative mx-auto mt-14 w-full max-w-3xl sm:mt-16">
+  <!-- floating: menu-bar recording chip -->
+  <div
+    class="absolute -left-3 -top-4 z-20 hidden items-center gap-2 rounded-full border border-line bg-paper/90 py-1.5 pl-2.5 pr-3.5 text-[13px] font-medium text-ink shadow-[0_8px_30px_rgba(0,0,0,0.08)] backdrop-blur sm:flex"
+  >
+    <span class="relative flex h-2 w-2">
+      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/70"></span>
+      <span class="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
+    </span>
+    Recording · 12:04
+  </div>
+
+  <!-- floating: exported chip -->
+  <div
+    class="absolute -bottom-4 -right-3 z-20 hidden items-center gap-2 rounded-full border border-line bg-paper/90 py-1.5 pl-3 pr-3.5 text-[13px] font-medium text-ink shadow-[0_8px_30px_rgba(0,0,0,0.08)] backdrop-blur sm:flex"
+  >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+    Exported to Markdown
+  </div>
+
+  <!-- window -->
+  <div class="overflow-hidden rounded-2xl border border-line bg-paper shadow-[0_24px_70px_-20px_rgba(0,0,0,0.18)]">
+    <!-- titlebar -->
+    <div class="flex items-center gap-2 border-b border-line px-4 py-3">
+      <span class="h-3 w-3 rounded-full bg-[#e5e5e5]"></span>
+      <span class="h-3 w-3 rounded-full bg-[#e5e5e5]"></span>
+      <span class="h-3 w-3 rounded-full bg-[#e5e5e5]"></span>
+      <span class="ml-2 font-mono text-[12px] text-faint">weekly-standup.md</span>
+    </div>
+
+    <!-- markdown body -->
+    <div class="relative px-5 py-5 font-mono text-[13px] leading-[1.85] sm:px-7 sm:text-[13.5px]">
+      <p><span class="text-faint">#</span> <span class="font-semibold text-ink">Weekly Standup</span></p>
+      <p class="text-faint">June 1, 2026 · 6 participants</p>
+
+      <p class="mt-4"><span class="text-faint">##</span> <span class="font-semibold text-ink">Summary</span></p>
+      <p class="text-muted">
+        Team aligned on the Q3 launch. The auth migration is the last
+        blocker; design sign-off lands Thursday.
+      </p>
+
+      <p class="mt-4"><span class="text-faint">##</span> <span class="font-semibold text-ink">Action items</span></p>
+      <p class="text-muted"><span class="text-faint">- [ ]</span> Dylan — ship the auth migration PR</p>
+      <p class="text-muted"><span class="text-faint">- [ ]</span> Priya — finalize onboarding copy</p>
+      <p class="text-muted"><span class="text-faint">- [x]</span> <span class="line-through decoration-faint">Sam — book the launch review</span></p>
+
+      <p class="mt-4"><span class="text-faint">##</span> <span class="font-semibold text-ink">Transcript</span></p>
+      <p><span class="font-semibold text-ink">You</span> <span class="text-faint">09:02</span> &nbsp;Let's start with the launch blockers.</p>
+      <p><span class="font-semibold text-ink">Priya</span> <span class="text-faint">09:04</span> &nbsp;Onboarding copy is about ninety percent there.</p>
+
+      <!-- fade out -->
+      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-paper to-transparent"></div>
+    </div>
+  </div>
+</div>

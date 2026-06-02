@@ -1,0 +1,55 @@
+---
+// "Plain Markdown → every app" trust strip. Official brand marks, grayscale
+// at rest, full brand color on hover. Per-icon heights optically balance the
+// silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
+// (Apple Notes, Logseq). Logos live in /public/logos.
+const apps = [
+  { name: "Notion", file: "notion", h: 27 },
+  { name: "Apple Notes", file: "apple-notes", h: 30 },
+  { name: "Obsidian", file: "obsidian", h: 32 },
+  { name: "Bear", file: "bear", h: 31 },
+  { name: "Logseq", file: "logseq", h: 30 },
+];
+---
+
+<section class="border-t border-line">
+  <div class="mx-auto max-w-6xl px-5 py-12 sm:px-8 sm:py-14">
+    <p class="text-center font-mono text-[12px] uppercase tracking-[0.18em] text-faint">
+      Fully compatible with
+    </p>
+
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
+      <!-- Markdown (official mark) -->
+      <div class="group flex items-center gap-2.5 text-faint transition-colors hover:text-ink">
+        <svg width="44" height="27" viewBox="0 0 208 128" fill="none" aria-hidden="true">
+          <rect x="5" y="5" width="198" height="118" rx="14" stroke="currentColor" stroke-width="9"></rect>
+          <path
+            fill="currentColor"
+            d="M30 98V30h19l20 25 20-25h19v68H89V57L69 82 49 57v41zm125 0-30-33h19V30h22v35h19z"
+          ></path>
+        </svg>
+        <span class="text-sm font-medium">Markdown</span>
+      </div>
+
+      {
+        apps.map(({ name, file, h }) => (
+          <div class="group flex items-center gap-2.5">
+            <img
+              src={`/logos/${file}.svg`}
+              alt=""
+              aria-hidden="true"
+              decoding="async"
+              style={`height:${h}px`}
+              class="w-auto opacity-65 grayscale transition duration-200 group-hover:opacity-100 group-hover:grayscale-0"
+            />
+            <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
+              {name}
+            </span>
+          </div>
+        ))
+      }
+
+      <span class="text-[15px] font-medium text-faint">+ anything that reads <span class="font-mono">.md</span></span>
+    </div>
+  </div>
+</section>

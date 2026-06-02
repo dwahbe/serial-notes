@@ -1,0 +1,517 @@
+---
+// "How it works" — a scroll-driven stepper (Watershed-style). As you scroll,
+// the active step highlights on the left and one Mac "desktop" stage on the
+// right walks through the real app flow: detect → record → summarize → export.
+// Scroll-driven on desktop; auto-cycles on mobile; static under reduced motion.
+const steps = [
+  {
+    n: "01",
+    title: "Captures every meeting",
+    body: "Serial Notes watches for Zoom, Teams, FaceTime, Slack and more. The moment a call starts, a notification offers one-click recording — and it stops itself when the call ends.",
+  },
+  {
+    n: "02",
+    title: "Transcribes on your Mac",
+    body: "Audio is transcribed on-device with automatic speaker labels. Nothing leaves your Mac, and after a one-time setup it works fully offline.",
+  },
+  {
+    n: "03",
+    title: "Summaries &amp; action items",
+    body: "When the meeting wraps, Apple Intelligence drafts a tight summary and a checklist of to-dos — generated right on your machine.",
+  },
+  {
+    n: "04",
+    title: "Exports clean Markdown",
+    body: 'Every meeting saves itself as one tidy <span class="font-mono text-[13.5px]">.md</span> file in the folder you choose — open it in Notion, Obsidian, or Apple Notes, anywhere plain text goes.',
+  },
+];
+---
+
+<section id="features" data-howitworks class="border-t border-line">
+  <div class="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
+    <!-- heading -->
+    <div class="max-w-2xl">
+      <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">How it works</p>
+      <h2 class="tracking-tightest mt-3 text-balance text-3xl font-semibold leading-tight text-ink sm:text-4xl">
+        From call to clean notes — without lifting a finger
+      </h2>
+      <p class="mt-4 max-w-lg text-pretty text-[17px] leading-relaxed text-muted">
+        Serial Notes runs entirely from your menu bar and handles the whole
+        loop — watch it work, start to finish.
+      </p>
+    </div>
+
+    <div class="mt-10 flex flex-col lg:mt-14 lg:grid lg:grid-cols-[1fr_1.05fr] lg:gap-12 xl:gap-16">
+      <!-- ── STAGE — sticky beside steps on lg, below the carousel on mobile ── -->
+      <div class="relative order-2 mt-8 lg:mt-0">
+        <div class="lg:sticky lg:top-24">
+          <div
+            data-stage
+            class="relative h-[400px] overflow-hidden rounded-2xl border border-line bg-gradient-to-br from-[#f7f7f8] to-[#e9e9eb] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.22)] sm:h-[460px]"
+          >
+            <!-- soft wallpaper sheen -->
+            <div
+              class="pointer-events-none absolute -inset-px bg-[radial-gradient(120%_80%_at_80%_-10%,rgba(255,255,255,0.9),transparent_60%)]"
+            >
+            </div>
+
+            <!-- menu bar -->
+            <div
+              class="absolute inset-x-0 top-0 z-30 flex h-7 items-center justify-end gap-3.5 border-b border-black/[0.06] bg-white/55 px-3 text-ink/70 backdrop-blur-md"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 20h.01"></path>
+                <path d="M2 8.82a15 15 0 0 1 20 0"></path>
+                <path d="M5 12.86a10 10 0 0 1 14 0"></path>
+                <path d="M8.5 16.43a5 5 0 0 1 7 0"></path>
+              </svg>
+              <svg width="22" height="14" viewBox="0 0 26 14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                <rect x="1" y="1.5" width="20" height="11" rx="3"></rect>
+                <rect x="3" y="3.5" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"></rect>
+                <path d="M24 5v4" stroke-linecap="round"></path>
+              </svg>
+              <span data-mbicon class="relative grid h-[19px] w-[19px] place-items-center rounded-[5px] bg-black/[0.08] text-ink">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.1"></circle>
+                  <g class="wf-bars" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                    <line x1="4.6" y1="6" x2="4.6" y2="10"></line>
+                    <line x1="6.3" y1="4.4" x2="6.3" y2="11.6"></line>
+                    <line x1="8" y1="3.6" x2="8" y2="12.4"></line>
+                    <line x1="9.7" y1="5" x2="9.7" y2="11"></line>
+                    <line x1="11.4" y1="5.8" x2="11.4" y2="10.2"></line>
+                  </g>
+                </svg>
+                <span class="rec-dot absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 opacity-0 ring-2 ring-white"></span>
+              </span>
+              <span class="font-medium tabular-nums text-[12.5px] tracking-tight">9:41</span>
+            </div>
+
+            <!-- ░░ VISUAL 0 — detection banner ░░ -->
+            <div data-vis="0" class="vis absolute inset-0">
+              <div class="absolute right-4 top-9 w-[290px] sm:w-[300px]">
+                <div class="flex items-center gap-2.5 rounded-[18px] border border-black/[0.08] bg-white pl-3 shadow-[0_18px_45px_-12px_rgba(0,0,0,0.32)]">
+                  <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-white">
+                    <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <g stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+                        <line x1="4.4" y1="6" x2="4.4" y2="10"></line>
+                        <line x1="6.2" y1="4.2" x2="6.2" y2="11.8"></line>
+                        <line x1="8" y1="3.2" x2="8" y2="12.8"></line>
+                        <line x1="9.8" y1="4.8" x2="9.8" y2="11.2"></line>
+                        <line x1="11.6" y1="5.8" x2="11.6" y2="10.2"></line>
+                      </g>
+                    </svg>
+                  </span>
+                  <div class="py-3">
+                    <p class="text-[13px] font-semibold leading-tight text-ink">Meeting detected</p>
+                    <p class="text-[12px] leading-tight text-ink/55">Zoom</p>
+                  </div>
+                  <span class="ml-auto py-1.5 pr-1.5">
+                    <span class="flex items-center gap-1.5 rounded-full bg-ink px-3 py-[7px] text-[12.5px] font-semibold text-white">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.2"></circle>
+                        <circle cx="12" cy="12" r="4.5" fill="currentColor"></circle>
+                      </svg>
+                      Record
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ░░ VISUAL 1 — recording popover ░░ -->
+            <div data-vis="1" class="vis absolute inset-0">
+              <div class="absolute right-4 top-9 w-[260px] sm:w-[280px]">
+                <div class="overflow-hidden rounded-2xl border border-black/[0.07] bg-white/95 p-5 shadow-[0_22px_55px_-14px_rgba(0,0,0,0.3)] backdrop-blur-xl">
+                  <div class="flex items-center justify-center gap-2.5">
+                    <span class="relative flex h-2.5 w-2.5">
+                      <span class="rec-ping absolute inline-flex h-full w-full rounded-full bg-red-500/70"></span>
+                      <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500"></span>
+                    </span>
+                    <span class="text-[15px] font-semibold tracking-tight text-ink">Recording</span>
+                  </div>
+                  <div data-timer class="mt-3 text-center font-mono text-[34px] font-medium tabular-nums tracking-tight text-ink">
+                    00:00
+                  </div>
+                  <div class="mt-4 flex w-full items-center justify-center gap-2 rounded-[10px] bg-ink py-2.5 text-[13.5px] font-medium text-white">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"></circle>
+                      <rect x="8.5" y="8.5" width="7" height="7" rx="1.5" fill="currentColor"></rect>
+                    </svg>
+                    Stop Recording
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ░░ VISUAL 2 — summary + action items ░░ -->
+            <div data-vis="2" class="vis absolute inset-0">
+              <div class="absolute inset-x-0 top-9 grid place-items-center px-6">
+                <div class="w-full max-w-[370px] rounded-xl border border-line bg-white p-5 shadow-[0_18px_50px_-16px_rgba(0,0,0,0.28)]">
+                  <div class="flex items-center gap-2">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="text-ink" aria-hidden="true">
+                      <path d="M9.94 14.06 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0L14.06 8.5l1.44 1.44 6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06l-1.44 1.44-1.58 6.14a.5.5 0 0 1-.96 0z"></path>
+                    </svg>
+                    <span class="text-[13px] font-semibold text-ink">Summary</span>
+                    <span class="ml-auto rounded-full bg-line-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-faint">Apple Intelligence</span>
+                  </div>
+                  <p class="mt-2 text-[12.5px] leading-relaxed text-muted">
+                    Team aligned on the Q3 launch. The auth migration is the last
+                    blocker; design sign-off lands Thursday.
+                  </p>
+                  <div class="mt-4 flex items-center gap-2">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="text-ink" aria-hidden="true">
+                      <path d="m3 17 2 2 4-4"></path>
+                      <path d="m3 7 2 2 4-4"></path>
+                      <path d="M13 6h8M13 12h8M13 18h8"></path>
+                    </svg>
+                    <span class="text-[13px] font-semibold text-ink">Action items</span>
+                  </div>
+                  <ul class="mt-2.5 space-y-2 text-[12.5px] text-muted">
+                    <li class="flex items-center gap-2">
+                      <span class="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[4px] border border-line"></span>
+                      Dylan — ship the auth migration PR
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <span class="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[4px] border border-line"></span>
+                      Priya — finalize onboarding copy
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <span class="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-[4px] bg-ink text-white">
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"></path></svg>
+                      </span>
+                      <span class="text-faint line-through">Sam — book the launch review</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- ░░ VISUAL 3 — clean Markdown file ░░ -->
+            <div data-vis="3" class="vis absolute inset-0">
+              <div class="absolute inset-x-0 top-9 grid place-items-center px-6">
+                <div class="w-full max-w-[400px] overflow-hidden rounded-xl border border-line bg-paper shadow-[0_18px_50px_-16px_rgba(0,0,0,0.28)]">
+                  <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
+                    <span class="ml-2 font-mono text-[11px] text-faint">weekly-standup.md</span>
+                  </div>
+                  <div class="relative px-5 py-4 font-mono text-[12px] leading-[1.8]">
+                    <p><span class="text-faint">#</span> <span class="font-semibold text-ink">Weekly Standup</span></p>
+                    <p class="text-faint">June 1, 2026 · 6 participants</p>
+                    <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Summary</span></p>
+                    <p class="text-muted">Team aligned on the Q3 launch. Auth migration is the last blocker.</p>
+                    <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Action items</span></p>
+                    <p class="text-muted"><span class="text-faint">- [ ]</span> Dylan — ship the auth migration PR</p>
+                    <p class="text-muted"><span class="text-faint">- [x]</span> <span class="line-through decoration-faint">Sam — book the launch review</span></p>
+                    <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Transcript</span></p>
+                    <p><span class="font-semibold text-ink">You</span> <span class="text-faint">09:02</span> Let's start with the blockers.</p>
+                    <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-paper to-transparent"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── STEPS — swipeable cards on mobile, scroll-driven list on lg ── -->
+      <ol
+        data-steps
+        class="order-1 -mx-5 flex snap-x snap-mandatory items-stretch gap-4 overflow-x-auto px-5 pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:mx-0 lg:block lg:overflow-visible lg:px-0 lg:pb-0"
+      >
+        {
+          steps.map((step, i) => (
+            <li class="w-[82%] shrink-0 snap-center sm:w-[58%] lg:w-auto lg:shrink lg:snap-align-none">
+              <button
+                data-step
+                type="button"
+                class="step group flex h-full w-full cursor-pointer flex-col rounded-xl border border-line p-5 text-left lg:min-h-[42vh] lg:justify-center lg:rounded-none lg:border-0 lg:p-0"
+              >
+                <div class="bar-track relative h-[2px] w-full overflow-hidden rounded-full bg-line">
+                  <span data-bar class="absolute inset-y-0 left-0 w-full origin-left bg-ink" style="transform:scaleX(0)" />
+                </div>
+                <div class="mt-4 flex items-baseline gap-3 lg:mt-5">
+                  <span data-num class="font-mono text-sm text-faint transition-colors">{step.n}</span>
+                  <span
+                    data-title
+                    class="text-xl font-semibold tracking-tight text-ink transition-colors lg:text-2xl lg:text-muted"
+                    set:html={step.title}
+                  />
+                </div>
+                <div class="desc-wrap">
+                  <div>
+                    <p class="pt-3 max-w-md text-[15px] leading-relaxed text-muted" set:html={step.body} />
+                  </div>
+                </div>
+              </button>
+            </li>
+          ))
+        }
+        <!-- trailing spacer so the last step can reach center while the stage
+             stays pinned (desktop only) -->
+        <li aria-hidden="true" class="hidden lg:block lg:h-[22vh]"></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<style>
+  .vis {
+    opacity: 0;
+    transition: opacity 0.45s ease;
+    pointer-events: none;
+  }
+  .vis.is-active {
+    opacity: 1;
+  }
+
+  [data-bar] {
+    transition: transform 0.12s linear;
+  }
+
+  /* Mobile: the active card gets a stronger edge, and its progress bar fills
+     over the auto-advance dwell. */
+  @media (max-width: 1023px) {
+    .step.is-active {
+      border-color: var(--color-faint);
+    }
+    .step.is-active [data-bar] {
+      animation: barfill 4.2s linear forwards;
+    }
+  }
+  @keyframes barfill {
+    from { transform: scaleX(0); }
+    to { transform: scaleX(1); }
+  }
+
+  [data-howitworks].is-recording .rec-dot {
+    opacity: 1;
+  }
+  .rec-ping {
+    animation: ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+  @keyframes ping {
+    75%, 100% { transform: scale(2.2); opacity: 0; }
+  }
+  .wf-bars line {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  [data-howitworks].is-recording .wf-bars line {
+    animation: wf 0.9s ease-in-out infinite;
+  }
+  .wf-bars line:nth-child(1) { animation-delay: 0s; }
+  .wf-bars line:nth-child(2) { animation-delay: 0.15s; }
+  .wf-bars line:nth-child(3) { animation-delay: 0.3s; }
+  .wf-bars line:nth-child(4) { animation-delay: 0.1s; }
+  .wf-bars line:nth-child(5) { animation-delay: 0.22s; }
+  @keyframes wf {
+    0%, 100% { transform: scaleY(0.55); }
+    50% { transform: scaleY(1); }
+  }
+
+  /* On desktop, collapse each step's description unless it's active. */
+  @media (min-width: 1024px) {
+    .desc-wrap {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition: grid-template-rows 0.35s ease, opacity 0.35s ease;
+    }
+    .desc-wrap > div {
+      overflow: hidden;
+    }
+    .step.is-active .desc-wrap {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+    .step.is-active [data-num],
+    .step.is-active [data-title] {
+      color: var(--color-ink);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-howitworks] *,
+    [data-howitworks] *::before,
+    [data-howitworks] *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+
+<script>
+  const section = document.querySelector<HTMLElement>("[data-howitworks]");
+  if (section) {
+    const stage = section.querySelector<HTMLElement>("[data-stage]")!;
+    const steps = Array.from(section.querySelectorAll<HTMLElement>("[data-step]"));
+    const vis = Array.from(stage.querySelectorAll<HTMLElement>(".vis"));
+    const bars = steps.map((s) => s.querySelector<HTMLElement>("[data-bar]"));
+    const timerEl = stage.querySelector<HTMLElement>("[data-timer]")!;
+    const N = steps.length;
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const desktopMq = window.matchMedia("(min-width: 1024px)");
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    const track = section.querySelector<HTMLElement>("[data-steps]")!;
+
+    let active = -1;
+    let scrollDriven = false; // set per-mount; desktop drives the bar fill via JS
+    let recTimer: ReturnType<typeof setInterval> | null = null;
+
+    function startRecTimer() {
+      if (recTimer) return;
+      let s = 0;
+      timerEl.textContent = "00:00";
+      recTimer = setInterval(() => {
+        s = (s + 1) % 60;
+        timerEl.textContent = "00:" + String(s).padStart(2, "0");
+      }, 1000);
+    }
+    function stopRecTimer() {
+      if (recTimer) clearInterval(recTimer);
+      recTimer = null;
+    }
+
+    function setActive(i: number, progress = 1) {
+      if (i !== active) {
+        active = i;
+        steps.forEach((s, idx) => s.classList.toggle("is-active", idx === i));
+        vis.forEach((v, idx) => v.classList.toggle("is-active", idx === i));
+        stage.classList.toggle("is-recording", i === 1);
+        if (i === 1) startRecTimer();
+        else stopRecTimer();
+      }
+      if (scrollDriven) {
+        bars.forEach((b, idx) => {
+          if (!b) return;
+          const scale = idx < i ? 1 : idx > i ? 0 : progress;
+          b.style.transform = `scaleX(${scale})`;
+        });
+      }
+    }
+
+    // Mode is chosen per-mount and re-chosen when crossing the lg breakpoint,
+    // so a desktop→narrow resize (or a preview that loads wide) still works.
+    function mountDesktop(): () => void {
+      scrollDriven = true;
+      let ticking = false;
+      const update = () => {
+        ticking = false;
+        const trigger = window.innerHeight * 0.42;
+        let idx = 0;
+        for (let i = 0; i < N; i++) {
+          if (steps[i].getBoundingClientRect().top <= trigger) idx = i;
+        }
+        const cur = steps[idx].getBoundingClientRect().top;
+        const nextTop =
+          idx < N - 1
+            ? steps[idx + 1].getBoundingClientRect().top
+            : cur + steps[idx].offsetHeight;
+        const progress = clamp((trigger - cur) / Math.max(1, nextTop - cur), 0, 1);
+        setActive(idx, progress);
+      };
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(update);
+      };
+      const onClick = (e: Event) =>
+        (e.currentTarget as HTMLElement).scrollIntoView({
+          behavior: reduce ? "auto" : "smooth",
+          block: "center",
+        });
+      window.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", onScroll);
+      steps.forEach((s) => s.addEventListener("click", onClick));
+      update();
+      return () => {
+        window.removeEventListener("scroll", onScroll);
+        window.removeEventListener("resize", onScroll);
+        steps.forEach((s) => s.removeEventListener("click", onClick));
+      };
+    }
+
+    function mountMobile(): () => void {
+      scrollDriven = false;
+      // The card whose center is nearest the track's center is active.
+      const pickCentered = () => {
+        const tr = track.getBoundingClientRect();
+        const center = tr.left + tr.width / 2;
+        let best = 0;
+        let bestDist = Infinity;
+        steps.forEach((s, i) => {
+          const r = s.getBoundingClientRect();
+          const d = Math.abs(r.left + r.width / 2 - center);
+          if (d < bestDist) {
+            bestDist = d;
+            best = i;
+          }
+        });
+        setActive(best);
+      };
+      let tking = false;
+      const onTrackScroll = () => {
+        if (tking) return;
+        tking = true;
+        requestAnimationFrame(() => {
+          tking = false;
+          pickCentered();
+        });
+      };
+      const onClick = (e: Event) => {
+        const el = e.currentTarget as HTMLElement;
+        setActive(steps.indexOf(el));
+        el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "center", block: "nearest" });
+      };
+      track.addEventListener("scroll", onTrackScroll, { passive: true });
+      steps.forEach((s) => s.addEventListener("click", onClick));
+      pickCentered();
+
+      let auto: ReturnType<typeof setInterval> | null = null;
+      let engaged = false;
+      // Update active directly (don't rely on the scroll event firing), then
+      // scroll the card into view.
+      const advance = () => {
+        const next = (active + 1) % N;
+        setActive(next);
+        steps[next].scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      };
+      const startAuto = () => {
+        if (auto || engaged || reduce || document.hidden) return;
+        auto = setInterval(advance, 4200);
+      };
+      const stopAuto = () => {
+        if (auto) clearInterval(auto);
+        auto = null;
+      };
+      const disengage = () => {
+        engaged = true;
+        stopAuto();
+      };
+      const onVis = () => (document.hidden ? stopAuto() : startAuto());
+      document.addEventListener("visibilitychange", onVis);
+      track.addEventListener("touchstart", disengage, { passive: true });
+      track.addEventListener("wheel", disengage, { passive: true });
+      startAuto();
+      return () => {
+        track.removeEventListener("scroll", onTrackScroll);
+        steps.forEach((s) => s.removeEventListener("click", onClick));
+        track.removeEventListener("touchstart", disengage);
+        track.removeEventListener("wheel", disengage);
+        document.removeEventListener("visibilitychange", onVis);
+        stopAuto();
+      };
+    }
+
+    let teardown = (desktopMq.matches ? mountDesktop : mountMobile)();
+    desktopMq.addEventListener("change", (e) => {
+      teardown();
+      active = -1;
+      bars.forEach((b) => b && (b.style.transform = "scaleX(0)"));
+      teardown = (e.matches ? mountDesktop : mountMobile)();
+    });
+  }
+</script>

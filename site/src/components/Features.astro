@@ -33,7 +33,7 @@ const steps = [
     <div class="max-w-2xl">
       <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">How it works</p>
       <h2 class="tracking-tightest mt-3 text-balance text-3xl font-semibold leading-tight text-ink sm:text-4xl">
-        From call to clean notes — without lifting a finger
+        From call to clean notes<br />all on device
       </h2>
       <p class="mt-4 max-w-lg text-pretty text-[17px] leading-relaxed text-muted">
         Serial Notes runs entirely from your menu bar and handles the whole
@@ -83,7 +83,7 @@ const steps = [
                 </svg>
                 <span class="rec-dot absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 opacity-0 ring-2 ring-white"></span>
               </span>
-              <span class="font-medium tabular-nums text-[12.5px] tracking-tight">9:41</span>
+              <span class="font-medium tabular-nums text-[12.5px] tracking-tight">10:09</span>
             </div>
 
             <!-- ░░ VISUAL 0 — detection banner ░░ -->
@@ -472,6 +472,7 @@ const steps = [
 
       let auto: ReturnType<typeof setInterval> | null = null;
       let engaged = false;
+      let inView = false; // gate auto-advance until the section is scrolled to
       // Update active directly (don't rely on the scroll event firing), then
       // scroll the card into view.
       const advance = () => {
@@ -480,7 +481,7 @@ const steps = [
         steps[next].scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       };
       const startAuto = () => {
-        if (auto || engaged || reduce || document.hidden) return;
+        if (auto || engaged || reduce || document.hidden || !inView) return;
         auto = setInterval(advance, 4200);
       };
       const stopAuto = () => {
@@ -495,8 +496,19 @@ const steps = [
       document.addEventListener("visibilitychange", onVis);
       track.addEventListener("touchstart", disengage, { passive: true });
       track.addEventListener("wheel", disengage, { passive: true });
-      startAuto();
+      // Only cycle once the carousel is actually on screen; pause when it
+      // leaves so it isn't already mid-rotation when the user arrives.
+      const io = new IntersectionObserver(
+        (entries) => {
+          inView = entries[0].isIntersecting;
+          if (inView) startAuto();
+          else stopAuto();
+        },
+        { threshold: 0.5 }
+      );
+      io.observe(track);
       return () => {
+        io.disconnect();
         track.removeEventListener("scroll", onTrackScroll);
         steps.forEach((s) => s.removeEventListener("click", onClick));
         track.removeEventListener("touchstart", disengage);

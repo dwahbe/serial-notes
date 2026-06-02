@@ -1,6 +1,6 @@
 ---
-// "Plain Markdown → every app" trust strip. Official brand marks, grayscale
-// at rest, full brand color on hover. Per-icon heights optically balance the
+// "Plain Markdown → every app" trust strip. Official brand marks, always
+// shown in full brand color. Per-icon heights optically balance the
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
 const apps = [
@@ -40,7 +40,7 @@ const apps = [
               aria-hidden="true"
               decoding="async"
               style={`height:${h}px`}
-              class="w-auto opacity-65 grayscale transition duration-200 group-hover:opacity-100 group-hover:grayscale-0"
+              class="w-auto"
             />
             <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
               {name}

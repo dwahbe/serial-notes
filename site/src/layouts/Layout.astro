@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
 import { SITE } from "../consts";
+import Analytics from "@vercel/analytics/astro";
 
 interface Props {
   title?: string;
@@ -42,5 +43,6 @@ const ogImage = new URL("/og.png", Astro.site ?? SITE.url).href;
   </head>
   <body class="min-h-screen antialiased">
     <slot />
+    <Analytics />
   </body>
 </html>

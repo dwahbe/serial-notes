@@ -8,6 +8,14 @@
     <string>Serial Notes</string>
     <key>CFBundleDisplayName</key>
     <string>Serial Notes</string>
+    <!-- Fallback version values. build-app.sh stamps the real version from
+         the latest git tag (CFBundleShortVersionString) + commit count
+         (CFBundleVersion) at wrap time; these defaults only apply to builds
+         made outside a git checkout. -->
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSAudioCaptureUsageDescription</key>

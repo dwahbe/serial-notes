@@ -39,13 +39,40 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 
+# --- Stamp the version into the bundled Info.plist (before signing) ------
+# Single source of truth is the latest git tag (vX.Y.Z -> X.Y.Z). The build
+# number is the commit count, which is monotonic across the history. An
+# explicit MARKETING_VERSION env var wins (release.sh sets it so the tag and
+# the artifact stay in lock-step). Falls back to whatever Info.plist already
+# carries when not in a git checkout / no tags exist yet.
+PLIST="$APP_BUNDLE/Contents/Info.plist"
+GIT_TAG="$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
+SHORT_VERSION="${MARKETING_VERSION:-${GIT_TAG#v}}"
+BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || true)"
+
+if [[ -n "$SHORT_VERSION" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$PLIST"
+fi
+if [[ -n "$BUILD_NUMBER" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
+fi
+echo "==> version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST") (build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST"))"
+
 # Write PkgInfo so LaunchServices treats this as a proper app.
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
-# Ad-hoc sign with entitlements so TCC + notifications behave like a real app.
-# When distributing, replace "-" with a Developer ID Application identity.
-echo "==> codesign (ad-hoc)"
-codesign --force --sign - \
+# Sign with entitlements so TCC + notifications behave like a real app.
+# Defaults to ad-hoc ("-"). To produce a distributable, notarizable build,
+# export SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" before
+# running. The hardened runtime (--options runtime) is already on, which
+# notarization requires.
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "==> codesign (ad-hoc)"
+else
+    echo "==> codesign ($SIGN_IDENTITY)"
+fi
+codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ENTITLEMENTS" \
     --options runtime \
     --timestamp=none \

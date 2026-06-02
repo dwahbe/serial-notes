@@ -213,6 +213,17 @@ private struct GeneralSettingsTab: View {
         return false
     }
 
+    /// e.g. "0.1.0 (beta) · Build 42". Major version 0 is treated as beta so
+    /// the label maintains itself — it drops the "(beta)" suffix at 1.0.0.
+    private var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        let major = Int(short.split(separator: ".").first ?? "") ?? 0
+        let suffix = major < 1 ? " (beta)" : ""
+        return "\(short)\(suffix) · Build \(build)"
+    }
+
     var body: some View {
         @Bindable var summary = summarySettings
         @Bindable var storage = storageSettings
@@ -268,6 +279,18 @@ private struct GeneralSettingsTab: View {
                 Text("When on, Serial Notes prompts when the associated call ends and stops automatically after a short countdown unless you keep recording.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text(versionString)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("About")
             }
         }
         .formStyle(.grouped)

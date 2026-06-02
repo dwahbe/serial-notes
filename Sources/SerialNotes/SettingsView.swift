@@ -10,10 +10,10 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gear") }
-            VoicesSettingsTab()
-                .tabItem { Label("Voices", systemImage: "person.wave.2") }
+            PeopleSettingsTab()
+                .tabItem { Label("People", systemImage: "person.wave.2") }
         }
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: 500)
         .background(SettingsWindowChrome())
     }
 }
@@ -70,24 +70,47 @@ private final class WindowCloseObserver: NSView {
     }
 }
 
-// MARK: - Voices Tab
+/// Stops the Settings window from auto-focusing the first text field (the name
+/// field) when the tab appears. macOS otherwise makes it the initial first
+/// responder, leaving a blinking caret the moment the tab opens. Pointing
+/// `initialFirstResponder` at the content view keeps AppKit from re-selecting the
+/// field each time the window becomes key.
+private struct InitialFocusSuppressor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView() }
 
-private struct VoicesSettingsTab: View {
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            window.initialFirstResponder = window.contentView
+            if window.firstResponder is NSText || window.firstResponder is NSTextView {
+                window.makeFirstResponder(nil)
+            }
+        }
+    }
+}
+
+// MARK: - People Tab
+
+private struct PeopleSettingsTab: View {
     @Environment(VoiceProfileStore.self) private var voiceStore
     @Environment(IdentitySettings.self) private var identitySettings
     @Environment(MeetingDetectionService.self) private var meetingDetector
     @State private var recorder = VoiceEnrollmentRecorder()
     @State private var showingEnrollmentFlow = false
     @State private var errorMessage: String?
+    /// Local edit buffer for the name so it commits on an explicit Save (or Return)
+    /// rather than persisting every keystroke. Kept in sync with the stored value
+    /// in `.onAppear` and when the enrollment flow changes it.
+    @State private var nameDraft = ""
+    @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
-        @Bindable var identity = identitySettings
         Form {
             Section {
-                TextField("Your name", text: $identity.yourName, prompt: Text("You"))
+                yourNameRow
                 yourVoiceRow
             } header: {
-                Text("Your Voice")
+                Text("You")
             } footer: {
                 Text("Your name replaces “You” in transcripts when Serial Notes recognizes your voice. Recording a sample is optional — it helps tell your voice apart from others. Nothing leaves your machine.")
                     .font(.caption)
@@ -120,6 +143,7 @@ private struct VoicesSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
+        .background(InitialFocusSuppressor())
         .sheet(isPresented: $showingEnrollmentFlow) {
             VoiceEnrollmentFlowView(
                 recorder: recorder,
@@ -129,24 +153,77 @@ private struct VoicesSettingsTab: View {
             )
         }
         .onAppear {
+            nameDraft = identitySettings.yourName
             let detector = meetingDetector
             recorder.onSuspendDetection = { detector.suspendDetection() }
             recorder.onResumeDetection = { detector.resumeDetection() }
         }
+        .onChange(of: identitySettings.yourName) { _, newValue in
+            // The enrollment flow can change the stored name out from under us —
+            // resync the draft unless the user is mid-edit on the same value.
+            if trimmedNameDraft != newValue { nameDraft = newValue }
+        }
+        .onChange(of: nameFieldFocused) { wasFocused, isFocused in
+            // Commit on focus loss so clicking away (or closing Settings) doesn't
+            // silently drop a typed name. Save is still explicit via the button/Return.
+            if wasFocused, !isFocused, isNameDirty { saveName() }
+        }
     }
 
-    // MARK: - Your Voice Row
+    // MARK: - Your Name
+
+    private var trimmedNameDraft: String {
+        nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isNameDirty: Bool {
+        trimmedNameDraft != identitySettings.yourName
+    }
+
+    private func saveName() {
+        nameDraft = trimmedNameDraft
+        identitySettings.yourName = nameDraft
+        nameFieldFocused = false
+    }
+
+    @ViewBuilder
+    private var yourNameRow: some View {
+        HStack(spacing: 8) {
+            Text("Your name")
+            // `.labelsHidden()` stops the Form from drawing the field's own title
+            // as a second leading label next to the "Your name" text above; the
+            // placeholder lives in `prompt` so it only shows when empty.
+            TextField("Your name", text: $nameDraft, prompt: Text("You"))
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .focused($nameFieldFocused)
+                .onSubmit(saveName)
+
+            if isNameDirty {
+                Button("Save", action: saveName)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.tint)
+            } else if !identitySettings.yourName.isEmpty {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .help("Saved")
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isNameDirty)
+    }
+
+    // MARK: - Smart Voice Detection Row
 
     @ViewBuilder
     private var yourVoiceRow: some View {
         if let profile = voiceStore.yourProfile {
             HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Voice sample recorded")
-                        .font(.body.weight(.medium))
-                    Text("Serial Notes can tell your voice apart from others.")
+                    Text("Smart voice detection")
+                        .font(.body)
+                    Text("On — Serial Notes recognizes your voice in meetings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -162,9 +239,8 @@ private struct VoicesSettingsTab: View {
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("No voice sample")
+                    Text("Smart voice detection")
                         .font(.body)
-                        .foregroundStyle(.secondary)
                     Text("Record a short sample so Serial Notes can tell your voice apart from others.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -151,26 +151,28 @@ enum CrossChannelEchoFilter {
         }.map { entries[$0] }
     }
 
-    /// Collapse the mic channel to a single "You" speaker, matching the Me/Them model
-    /// that passive recorders (Granola, Notion) ship. During a remote call any extra
-    /// mic speaker is acoustic bleed, not a second person, so labelling it "Voice N" is
+    /// Collapse the mic channel to a single primary speaker — the user's preferred
+    /// name, or "You" when unset (`primaryName`) — matching the Me/Them model that
+    /// passive recorders (Granola, Notion) ship. During a remote call any extra mic
+    /// speaker is acoustic bleed, not a second person, so labelling it "Voice N" is
     /// misleading. Run this AFTER `filterEchoes` — collapsing first would make echo
-    /// lines part of the dominant "You" speaker, which the filter never drops.
+    /// lines part of the dominant primary speaker, which the filter never drops.
     ///
     /// `enrolledMicNames` (voices the user explicitly enrolled on the mic side) are
-    /// preserved, and `collapseToYou` is false for pure in-person recordings (no system
-    /// audio) so genuinely co-located speakers keep distinct labels.
+    /// preserved, and `collapseToPrimary` is false for pure in-person recordings (no
+    /// system audio) so genuinely co-located speakers keep distinct labels.
     static func normalizeMicLabels(
         _ entries: [TranscriptEntry],
-        collapseToYou: Bool,
+        collapseToPrimary: Bool,
+        primaryName: String = "You",
         enrolledMicNames: Set<String>
     ) -> [TranscriptEntry] {
-        guard collapseToYou else { return entries }
+        guard collapseToPrimary else { return entries }
         return entries.map { entry in
             guard entry.source == .mic, !enrolledMicNames.contains(entry.speaker) else { return entry }
             return TranscriptEntry(
                 source: entry.source,
-                speaker: "You",
+                speaker: primaryName,
                 text: entry.text,
                 timestamp: entry.timestamp
             )

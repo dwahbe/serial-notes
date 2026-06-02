@@ -74,19 +74,22 @@ private final class WindowCloseObserver: NSView {
 
 private struct VoicesSettingsTab: View {
     @Environment(VoiceProfileStore.self) private var voiceStore
+    @Environment(IdentitySettings.self) private var identitySettings
     @Environment(MeetingDetectionService.self) private var meetingDetector
     @State private var recorder = VoiceEnrollmentRecorder()
     @State private var showingEnrollmentFlow = false
     @State private var errorMessage: String?
 
     var body: some View {
+        @Bindable var identity = identitySettings
         Form {
             Section {
+                TextField("Your name", text: $identity.yourName, prompt: Text("You"))
                 yourVoiceRow
             } header: {
                 Text("Your Voice")
             } footer: {
-                Text("Used to recognize you in future meetings. Recorded locally. Nothing leaves your machine.")
+                Text("Your name replaces “You” in transcripts when Serial Notes recognizes your voice. Recording a sample is optional — it helps tell your voice apart from others. Nothing leaves your machine.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -121,6 +124,7 @@ private struct VoicesSettingsTab: View {
             VoiceEnrollmentFlowView(
                 recorder: recorder,
                 voiceStore: voiceStore,
+                identitySettings: identitySettings,
                 onDismiss: { showingEnrollmentFlow = false }
             )
         }
@@ -140,9 +144,9 @@ private struct VoicesSettingsTab: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name)
+                    Text("Voice sample recorded")
                         .font(.body.weight(.medium))
-                    Text("Voice profile saved")
+                    Text("Serial Notes can tell your voice apart from others.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -158,10 +162,10 @@ private struct VoicesSettingsTab: View {
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Not set")
+                    Text("No voice sample")
                         .font(.body)
                         .foregroundStyle(.secondary)
-                    Text("Record a short sample so we can label you by name.")
+                    Text("Record a short sample so Serial Notes can tell your voice apart from others.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

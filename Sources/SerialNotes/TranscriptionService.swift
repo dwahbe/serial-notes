@@ -48,8 +48,12 @@ actor TranscriptionService {
 
     private var pendingEntries: [TranscriptEntry] = []
     /// Names enrolled on the mic side this session. Preserved when the final render
-    /// collapses the mic channel to a single "You" during remote calls.
+    /// collapses the mic channel to a single primary speaker during remote calls.
     private var enrolledMicNames: Set<String> = []
+    /// The label for the user's own (mic) voice — their preferred name, or "You"
+    /// when unset. Drives the streaming default mic label and the final-render
+    /// collapse target. Set at session start, reset to "You" on session end.
+    private var micPrimaryName = "You"
     private var streamingEchoContext = EchoSuppressionContext()
     private var streamingEntryCount = 0
     private var streamingEntrySources = Set<AudioSide>()
@@ -105,11 +109,13 @@ actor TranscriptionService {
         sessionDirectory: URL,
         sessionStart: Date,
         enrollments: [EnrollmentClip] = [],
-        summarySettings: SummarySettings.Snapshot = .disabled
+        summarySettings: SummarySettings.Snapshot = .disabled,
+        micPrimaryName: String = "You"
     ) async throws {
         guard modelsLoaded else {
             throw TranscriptionError.modelsNotLoaded
         }
+        self.micPrimaryName = micPrimaryName
 
         for side in AudioSide.allCases {
             await sideStates[side]?.asr?.reset()
@@ -259,6 +265,7 @@ actor TranscriptionService {
         summarizer = nil
         activeSessionID = nil
         enrolledMicNames = []
+        micPrimaryName = "You"
     }
 
     private func deleteAudioFiles(in directory: URL) {
@@ -599,7 +606,7 @@ actor TranscriptionService {
             state.nextSystemPersonNumber += 1
         case .mic:
             if !state.micSeenPrimarySpeaker {
-                label = "You"
+                label = micPrimaryName
                 state.micSeenPrimarySpeaker = true
             } else {
                 label = "Voice \(state.nextMicVoiceNumber)"
@@ -756,14 +763,16 @@ actor TranscriptionService {
             minWords: Self.echoFilterMinWords
         )
 
-        // On a remote call (system audio present), collapse the mic to a single "You"
-        // so any echo the filter missed isn't surfaced as a phantom "Voice N". Must run
-        // after the filter — see normalizeMicLabels. In-person sessions (no system
-        // audio) skip this so co-located speakers keep distinct labels.
+        // On a remote call (system audio present), collapse the mic to the single
+        // primary speaker (the user's preferred name, or "You") so any echo the filter
+        // missed isn't surfaced as a phantom "Voice N". Must run after the filter — see
+        // normalizeMicLabels. In-person sessions (no system audio) skip this so
+        // co-located speakers keep distinct labels.
         let systemAudioActive = sorted.contains { $0.source == .system }
         let kept = CrossChannelEchoFilter.normalizeMicLabels(
             filtered,
-            collapseToYou: systemAudioActive,
+            collapseToPrimary: systemAudioActive,
+            primaryName: micPrimaryName,
             enrolledMicNames: enrolledMicNames
         )
 

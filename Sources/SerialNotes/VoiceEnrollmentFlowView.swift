@@ -11,6 +11,7 @@ struct VoiceEnrollmentFlowView: View {
 
     @Bindable var recorder: VoiceEnrollmentRecorder
     let voiceStore: VoiceProfileStore
+    let identitySettings: IdentitySettings
     let onDismiss: () -> Void
 
     @State private var step: Step = .intro
@@ -70,7 +71,6 @@ struct VoiceEnrollmentFlowView: View {
 
     private func retryCapture(oldClipURL: URL) {
         try? FileManager.default.removeItem(at: oldClipURL)
-        nameDraft = ""
         startCapture()
     }
 
@@ -82,12 +82,15 @@ struct VoiceEnrollmentFlowView: View {
     }
 
     private func save(clipURL: URL) {
+        // The name is optional — an empty value stores the profile under the "You"
+        // fallback and clears any preferred name. Persist the trimmed value so the
+        // Settings field and transcript labels stay in sync.
         let trimmed = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
         do {
-            let profile = try voiceStore.save(name: trimmed, kind: .you, clipURL: clipURL)
+            _ = try voiceStore.save(name: trimmed, kind: .you, clipURL: clipURL)
+            identitySettings.yourName = trimmed
             try? FileManager.default.removeItem(at: clipURL)
-            step = .done(profileName: profile.name)
+            step = .done(profileName: trimmed)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -96,6 +99,9 @@ struct VoiceEnrollmentFlowView: View {
     private func handleRecorderStateChange(_ newState: VoiceEnrollmentRecorder.State) {
         switch newState {
         case .finished(let clipURL):
+            // Pre-fill from the persisted preferred name, but don't clobber an
+            // in-progress edit carried over from a re-record.
+            if nameDraft.isEmpty { nameDraft = identitySettings.yourName }
             step = .naming(clipURL: clipURL)
         case .failed(let message):
             errorMessage = message
@@ -305,9 +311,9 @@ private struct NamingStep: View {
             }
 
             VStack(spacing: 12) {
-                Text("Name your voice")
+                Text("Add your name")
                     .font(.title2.weight(.semibold))
-                Text("This name appears in your meeting transcripts whenever Serial detects your voice.")
+                Text("Optional. Your name replaces “You” in transcripts. You can change it anytime in Settings.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -315,7 +321,7 @@ private struct NamingStep: View {
                     .padding(.horizontal, 40)
             }
 
-            TextField("Your name", text: $nameDraft)
+            TextField("Your name", text: $nameDraft, prompt: Text("You"))
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 280)
                 .focused($nameFocused)
@@ -348,7 +354,6 @@ private struct NamingStep: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
-                .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 40)
 
@@ -367,8 +372,13 @@ private struct NamingStep: View {
 // MARK: - Done
 
 private struct DoneStep: View {
+    /// The user's preferred name, or empty when they skipped it.
     let name: String
     let onFinish: () -> Void
+
+    private var headline: String {
+        name.isEmpty ? "You're all set." : "You're all set, \(name)."
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -384,7 +394,7 @@ private struct DoneStep: View {
             }
 
             VStack(spacing: 12) {
-                Text("You're all set, \(name).")
+                Text(headline)
                     .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
                 Text("Serial will use your voice to identify you in future transcripts. You can re-record or delete your profile anytime from Settings.")

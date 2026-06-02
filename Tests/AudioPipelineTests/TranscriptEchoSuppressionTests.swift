@@ -155,12 +155,14 @@ struct CrossChannelEchoFilterTests {
 struct MicLabelNormalizationTests {
     private func normalize(
         _ entries: [TranscriptEntry],
-        collapseToYou: Bool,
+        collapseToPrimary: Bool,
+        primaryName: String = "You",
         enrolled: Set<String> = []
     ) -> [TranscriptEntry] {
         CrossChannelEchoFilter.normalizeMicLabels(
             entries,
-            collapseToYou: collapseToYou,
+            collapseToPrimary: collapseToPrimary,
+            primaryName: primaryName,
             enrolledMicNames: enrolled
         )
     }
@@ -173,11 +175,27 @@ struct MicLabelNormalizationTests {
             .init(source: .system, speaker: "Person 1", text: "Okay, I see the share button now.", timestamp: 15),
         ]
 
-        let kept = normalize(entries, collapseToYou: true)
+        let kept = normalize(entries, collapseToPrimary: true)
         #expect(!kept.contains { $0.speaker.hasPrefix("Voice") })
         #expect(kept.filter { $0.source == .mic }.allSatisfy { $0.speaker == "You" })
         // System labels are never touched.
         #expect(kept.contains { $0.source == .system && $0.speaker == "Person 1" })
+    }
+
+    @Test("A preferred name is used as the collapse target instead of You")
+    func preferredNameUsedAsCollapseTarget() {
+        let entries: [TranscriptEntry] = [
+            .init(source: .mic, speaker: "Dylan", text: "Let's start the domain transfer.", timestamp: 10),
+            .init(source: .mic, speaker: "Voice 2", text: "Dynamic gallery, gallery.", timestamp: 20),
+            .init(source: .system, speaker: "Person 1", text: "Okay, I see the share button now.", timestamp: 15),
+        ]
+
+        // "Dylan" is both the enrolled label and the collapse target, so the whole
+        // mic channel resolves to "Dylan" — no "You" and no phantom "Voice N".
+        let kept = normalize(entries, collapseToPrimary: true, primaryName: "Dylan", enrolled: ["Dylan"])
+        #expect(kept.filter { $0.source == .mic }.allSatisfy { $0.speaker == "Dylan" })
+        #expect(!kept.contains { $0.speaker == "You" })
+        #expect(!kept.contains { $0.speaker.hasPrefix("Voice") })
     }
 
     @Test("In-person recording keeps distinct mic speakers")
@@ -187,8 +205,8 @@ struct MicLabelNormalizationTests {
             .init(source: .mic, speaker: "Voice 2", text: "I brought the revenue figures.", timestamp: 20),
         ]
 
-        // No system audio this session → collapseToYou is false.
-        let kept = normalize(entries, collapseToYou: false)
+        // No system audio this session → collapseToPrimary is false.
+        let kept = normalize(entries, collapseToPrimary: false)
         #expect(kept.contains { $0.speaker == "Voice 2" })
     }
 
@@ -200,7 +218,7 @@ struct MicLabelNormalizationTests {
             .init(source: .system, speaker: "Person 1", text: "Okay, got it.", timestamp: 15),
         ]
 
-        let kept = normalize(entries, collapseToYou: true, enrolled: ["Dylan"])
+        let kept = normalize(entries, collapseToPrimary: true, enrolled: ["Dylan"])
         #expect(kept.contains { $0.speaker == "Dylan" })
         #expect(!kept.contains { $0.speaker.hasPrefix("Voice") })
         #expect(kept.contains { $0.source == .mic && $0.speaker == "You" })

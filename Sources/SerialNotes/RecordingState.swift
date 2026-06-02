@@ -10,6 +10,7 @@ final class RecordingState {
     @ObservationIgnored weak var voiceProfileStore: VoiceProfileStore?
     @ObservationIgnored weak var summarySettings: SummarySettings?
     @ObservationIgnored weak var storageSettings: StorageSettings?
+    @ObservationIgnored weak var identitySettings: IdentitySettings?
 
     private var timer: Timer?
     private var startDate: Date?
@@ -59,7 +60,11 @@ final class RecordingState {
             // between startCapture's return and startSession's completion would
             // bleed into stale state.
             let now = Date()
-            let enrollments = loadEnrollments()
+            // The preferred name (or "You" when unset) labels the user's mic
+            // voice everywhere: the streaming default label, the `.you` diarizer
+            // enrollment, and the final-render collapse target.
+            let micDisplayName = identitySettings?.micDisplayName ?? "You"
+            let enrollments = loadEnrollments(micDisplayName: micDisplayName)
             // Pass the start-time snapshot so the summarizer can prewarm during
             // the recording. If the user toggles summary on later, the splice
             // step falls back to lazy construction.
@@ -68,7 +73,8 @@ final class RecordingState {
                 sessionDirectory: sessionDir,
                 sessionStart: now,
                 enrollments: enrollments,
-                summarySettings: summarySnapshot
+                summarySettings: summarySnapshot,
+                micPrimaryName: micDisplayName
             )
 
             // Wire audio buffer callbacks for transcription.
@@ -258,13 +264,17 @@ final class RecordingState {
         await captureService.stopCapture()
     }
 
-    private func loadEnrollments() -> [EnrollmentClip] {
+    private func loadEnrollments(micDisplayName: String) -> [EnrollmentClip] {
         guard let store = voiceProfileStore else { return [] }
         return store.profiles.compactMap { profile -> EnrollmentClip? in
             guard let clip = store.loadClipSamples(for: profile) else { return nil }
             let side: AudioSide = profile.kind == .you ? .mic : .system
+            // Label the user's own voice with their current preferred name rather
+            // than the name baked into the profile at enrollment time — the name
+            // can be changed in Settings after recording without re-enrolling.
+            let name = profile.kind == .you ? micDisplayName : profile.name
             return EnrollmentClip(
-                name: profile.name,
+                name: name,
                 side: side,
                 samples: clip.samples,
                 sampleRate: clip.sampleRate

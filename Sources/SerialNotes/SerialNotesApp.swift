@@ -28,6 +28,7 @@ struct SerialNotesApp: App {
     @State private var storageSettings: StorageSettings
     @State private var summarySettings: SummarySettings
     @State private var meetingSettings: MeetingSettings
+    @State private var identitySettings: IdentitySettings
     @State private var modelDownloadState: ModelDownloadState
     @State private var meetingDetectionService: MeetingDetectionService
     @State private var voiceProfileStore: VoiceProfileStore
@@ -37,6 +38,7 @@ struct SerialNotesApp: App {
         let storage = StorageSettings()
         let summary = SummarySettings()
         let meeting = MeetingSettings()
+        let identity = IdentitySettings()
         let voices = VoiceProfileStore()
         let detector = MeetingDetectionService(recordingState: recording, meetingSettings: meeting)
         let modelState = ModelDownloadState(transcriptionService: recording.transcriptionService)
@@ -44,6 +46,7 @@ struct SerialNotesApp: App {
         recording.voiceProfileStore = voices
         recording.summarySettings = summary
         recording.storageSettings = storage
+        recording.identitySettings = identity
         recording.onRecordingChange = { [weak detector] in detector?.recordingStateChanged() }
         detector.onRecordRequested = { [weak recording, weak storage] in
             guard let recording, let storage else { return }
@@ -57,6 +60,7 @@ struct SerialNotesApp: App {
         _storageSettings = State(initialValue: storage)
         _summarySettings = State(initialValue: summary)
         _meetingSettings = State(initialValue: meeting)
+        _identitySettings = State(initialValue: identity)
         _modelDownloadState = State(initialValue: modelState)
         _meetingDetectionService = State(initialValue: detector)
         _voiceProfileStore = State(initialValue: voices)
@@ -91,6 +95,7 @@ struct SerialNotesApp: App {
                 .environment(storageSettings)
                 .environment(summarySettings)
                 .environment(meetingSettings)
+                .environment(identitySettings)
                 .environment(meetingDetectionService)
         }
     }

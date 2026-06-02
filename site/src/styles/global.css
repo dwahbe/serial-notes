@@ -9,6 +9,9 @@
   --color-faint: #6f6f6f;
   --color-line: #ececec;
   --color-line-soft: #f4f4f4;
+  /* Decorative grid texture — a hair lighter than --color-line so the
+     backdrop recedes instead of competing with real frame/border lines. */
+  --color-grid-line: #f1f1f1;
   --color-paper: #ffffff;
 
   --font-sans:
@@ -56,8 +59,8 @@ body {
    rather than a table. Lives behind the hero only. */
 .bg-grid {
   background-image:
-    linear-gradient(to right, var(--color-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+    linear-gradient(to right, var(--color-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid-line) 1px, transparent 1px);
   /* 64px divides the framed column's 576px half-width (576 = 9 × 64), and
      anchoring a line to the viewport center (= column center) lands grid lines
      exactly on the max-w-6xl frame edges instead of a few px off them. */
@@ -76,6 +79,54 @@ body {
     transparent 78%
   );
   mask-image: radial-gradient(115% 90% at 50% 0%, #000 35%, transparent 78%);
+}
+
+/* ── Hero clearing ─────────────────────────────────────────────
+   A soft white wash centered behind the headline. It knocks the grid
+   back to near-white directly under the type and lets it return to
+   faint texture toward the edges — the "clearing" that keeps the hero
+   from feeling busy (esp. on mobile, where the H1 wraps over the grid).
+   Sits above .bg-grid, below the content. Center tracks the headline. */
+.hero-clear {
+  background: radial-gradient(
+    460px 380px at 50% 248px,
+    #fff 0%,
+    rgba(255, 255, 255, 0.86) 46%,
+    transparent 76%
+  );
+}
+@media (min-width: 640px) {
+  .hero-clear {
+    background: radial-gradient(
+      700px 420px at 50% 320px,
+      #fff 0%,
+      rgba(255, 255, 255, 0.85) 44%,
+      transparent 74%
+    );
+  }
+}
+
+/* Dark counterpart of .hero-clear for the inverted "Private by design"
+   band: an ink wash that pushes the faint white grid back to black behind
+   the headline and lets it return to texture at the edges. Same idea,
+   tuned to that section's (shorter) vertical rhythm. */
+.closing-clear {
+  background: radial-gradient(
+    480px 340px at 50% 200px,
+    #0a0a0a 0%,
+    rgba(10, 10, 10, 0.85) 46%,
+    transparent 76%
+  );
+}
+@media (min-width: 640px) {
+  .closing-clear {
+    background: radial-gradient(
+      660px 380px at 50% 232px,
+      #0a0a0a 0%,
+      rgba(10, 10, 10, 0.84) 44%,
+      transparent 74%
+    );
+  }
 }
 
 /* ── Corner cross-mark ─────────────────────────────────────────

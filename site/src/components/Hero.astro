@@ -7,8 +7,11 @@ import { SITE } from "../consts";
 <section class="relative left-1/2 w-screen -translate-x-1/2 overflow-hidden">
   <!-- grid backdrop, faded — drifts at ~0.75× scroll for subtle depth (see script below) -->
   <div id="hero-grid" class="pointer-events-none absolute inset-0 -z-10 bg-grid mask-radial [will-change:background-position]"></div>
+  <!-- clearing: soft white wash behind the headline so the type sits in calm
+       space and the grid reads as edge texture (see .hero-clear in global.css) -->
+  <div class="hero-clear pointer-events-none absolute inset-x-0 top-0 -z-[9] h-[560px] sm:h-[760px]"></div>
 
-  <div class="mx-auto max-w-6xl px-5 pb-20 pt-16 sm:px-8 sm:pt-24">
+  <div class="mx-auto max-w-6xl px-5 pb-20 pt-20 sm:px-8 sm:pt-28">
     <div class="mx-auto flex max-w-3xl flex-col items-center text-center">
       <!-- eyebrow -->
       <div
@@ -23,19 +26,19 @@ import { SITE } from "../consts";
       </div>
 
       <h1
-        class="tracking-tightest mt-4 text-balance text-5xl font-semibold leading-[1.03] text-ink sm:text-6xl lg:text-7xl"
+        class="tracking-tightest mt-5 text-balance text-5xl font-semibold leading-[1.03] text-ink sm:mt-6 sm:text-6xl lg:text-7xl"
       >
         Meeting notes, where you already work
       </h1>
 
-      <p class="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-muted">
+      <p class="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-muted sm:mt-7">
         Serial Notes lives in your menu bar, records every meeting, and
         transcribes it on-device. Clean Markdown saves straight to the folder
         you choose — ready for Notion, Apple Notes, or Obsidian.
       </p>
 
       <!-- CTAs -->
-      <div class="mt-8 flex flex-col items-center gap-3 sm:flex-row">
+      <div class="mt-9 flex flex-col items-center gap-3 sm:mt-10 sm:flex-row">
         <a
           href={SITE.download}
           target="_blank"

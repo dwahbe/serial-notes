@@ -12,18 +12,22 @@ import Footer from "../components/Footer.astro";
   <Nav />
 
   <!-- Centered, hairline-framed content column (the technical-drawing look).
-       Borders paint INSIDE the box, so a left+right border lands its lines at
-       x=144 and x=1295 (1151px apart) — but the backdrop grid lines fall on the
-       box EDGES (144 and 1296, 1152px apart). The left coincides; the right was
-       1px short, doubling against the grid line. Fix: keep the real left border
-       (on the grid line at 144) and draw the right line as a 1px OUTSET shadow
-       on the box edge (1296), so it sits exactly on the grid line. -->
-  <main class="relative mx-auto max-w-6xl border-l border-line [box-shadow:1px_0_0_0_var(--color-line)]">
-    <!-- crosses offset -1px so each stroke sits on the frame line: the left
-         border paints at x=144, the right shadow at x=1296 (both grid lines) -->
-    <span class="cross -left-px top-0"></span>
+       Both side lines are box-shadows, not borders, so neither steals a pixel of
+       content width. A real `border-l` does: it shrinks the content box on the
+       left only, pushing its center 0.5px right of the viewport center — and the
+       full-bleed sections (Hero, Closing) center on this box, so that 0.5px left
+       a sub-pixel white sliver down the left edge of the black Closing band.
+       Inset-left + outset-right keeps the content box symmetric and viewport-
+       centered, so the bleeds reach x=0 exactly. The lines still land on the
+       backdrop grid: the inset-left paints the box's inner edge from x=144, the
+       outset-right sits on the box edge at x=1296. -->
+  <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
+    <!-- crosses sit on the frame lines (both grid lines): the left stroke at
+         x=144 (left-0, on the box edge), the right at x=1296 (-right-px, on the
+         outset shadow) -->
+    <span class="cross left-0 top-0"></span>
     <span class="cross -right-px top-0"></span>
-    <span class="cross bottom-0 -left-px"></span>
+    <span class="cross bottom-0 left-0"></span>
     <span class="cross bottom-0 -right-px"></span>
 
     <Hero />

@@ -33,13 +33,42 @@ as the wrapped `.app`, leading to duplicate menu bar icons and traced
 
 Requires **Xcode 26+** and **macOS 26+**. Swift tools version 6.2.
 
+## Releases
+
+```bash
+./scripts/release.sh 0.2.0           # build + zip + tag + GitHub pre-release
+./scripts/release.sh 1.0.0 --stable  # same, but a full (non-pre) release
+```
+
+- **Versioning:** SemVer. While in beta we stay on `0.x.y` — major version `0`
+  is itself the "beta" signal (the Settings → About row and the GitHub
+  pre-release flag both derive from it; no `-beta` strings to maintain). Bump
+  to `1.0.0 --stable` to leave beta.
+- **Single source of truth = the git tag.** `build-app.sh` stamps
+  `CFBundleShortVersionString` from the latest tag (`vX.Y.Z` → `X.Y.Z`) and
+  `CFBundleVersion` from the commit count, via `PlistBuddy`, before signing.
+  The keys in `Info.plist` are only fallbacks for builds made outside a git
+  checkout. `release.sh` pins `MARKETING_VERSION` so the artifact always
+  matches the tag it creates.
+- **Release notes** are GitHub-Releases-native: `--generate-notes` builds them
+  from merged PRs since the last tag, grouped by label per `.github/release.yml`.
+  There is intentionally no separate `CHANGELOG.md` to double-maintain — the
+  Releases page is the canonical changelog.
+- **Signing / distribution:** ad-hoc by default. To ship a build others can
+  open without Gatekeeper friction, export
+  `SIGN_IDENTITY="Developer ID Application: … (TEAMID)"` (hardened runtime is
+  already on) and add a `notarytool submit --wait` + `stapler staple` step to
+  `release.sh` after the zip. Until then, a downloaded `.app` is quarantined
+  and testers must `xattr -dr com.apple.quarantine SerialNotes.app`.
+
 ## Project Structure
 
 ```
 Package.swift              # SwiftPM manifest (executable + tests + ObjC module)
 scripts/
-  build-app.sh             # swift build → wrap into .app → codesign → lsregister
+  build-app.sh             # swift build → wrap into .app → stamp version → codesign → lsregister
   run.sh                   # kill existing instance → build-app.sh → open .app
+  release.sh               # build → zip → git tag → gh (pre-)release w/ auto notes
 Sources/
   SerialNotes/             # Main app target (SwiftUI executable)
     SerialNotesApp.swift              # Entry point, MenuBarExtra + Settings scenes,
@@ -58,8 +87,11 @@ Sources/
                                       #   applies punctuation via TranscriptRewriter,
                                       #   splices summary + action items at endSession
     EchoSuppressionContext.swift      # TranscriptEntry value type + n-gram echo
-                                      #   suppression context, shared by the streaming
-                                      #   pipeline and the final-render pass
+                                      #   suppression context used by the streaming
+                                      #   pipeline, plus CrossChannelEchoFilter — the
+                                      #   dominance-aware cross-channel echo remover +
+                                      #   mic→"You" label collapse used by the
+                                      #   final-render pass
     FinalTranscriptSegmenter.swift    # Pure-function segmenter that breaks the
                                       #   high-accuracy ASRResult into
                                       #   timestamped chunks via token timings
@@ -170,3 +202,17 @@ See **[DESIGN.md](DESIGN.md)** for all frontend and design decisions (Liquid Gla
 - Adding a new meeting app: add one row to `MeetingDetectionService.knownMeetingApps` with `displayName` + `coreAudioBundleSubstrings`. Both the start-detection path and the audio-activity monitor read from this table — do not introduce a parallel switch elsewhere.
 - Transcript post-processing splits by scope: **per-utterance mutations** (punctuation, capitalization, anything that touches a single EOU's text) belong inside `TranscriptionService`'s EOU handlers — the 3-second flush delay (`flushOldEntries`) gives detached rewrite tasks headroom to complete before their entry's timestamp is flushed; do not add a separate per-entry post-write pass. **Whole-transcript passes** (summary, action items, anything that needs the full session) belong in `endSession()` after the file is finalized on disk, mirroring `spliceSummarySections` — read the file back, mutate, write atomically.
 - The test target `@testable import SerialNotes`, so keep testable code at `internal` visibility; `private` types cannot carry `@Generable` or other macro-expanded conformances (moved out of `FoundationModelsRewriter` for this reason).
+
+## Marketing site
+
+The marketing/landing site lives in `site/` — a self-contained **Astro + Tailwind v4**
+project that uses **bun**. It is **not** part of the macOS app build: SwiftPM only
+compiles `Sources/` + `Tests/` via explicit `path:` targets, so `site/` is never swept
+into the Swift build.
+
+- **Dev:** `cd site && bun install && bun run dev` (serves on `localhost:4321`)
+- **Build:** `cd site && bun run build` → `site/dist/`
+- **Deploy:** Vercel, with the dashboard **Root Directory set to `site/`**.
+  `site/vercel.json` pins the Astro framework and sets an `ignoreCommand` so commits
+  that don't touch `site/` skip the build.
+- Site-wide copy + links live in `site/src/consts.ts`.

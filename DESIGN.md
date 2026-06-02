@@ -1,5 +1,7 @@
 # Design
 
+_macOS app design below; the marketing site (`site/`) is documented at the end._
+
 ## Fundamentals
 
 - Menu bar-only app — no Dock icon, no main window
@@ -45,3 +47,71 @@
 
 - Use `NSOpenPanel` / `NSSavePanel` for file operations
 - Set `.regular` activation policy before presenting, restore `.accessory` after
+
+---
+
+# Marketing site (`site/`)
+
+The landing page is a separate Astro + Tailwind v4 project (build/deploy details
+live in the "Marketing site" section of `CLAUDE.md`). The look is deliberately
+**Vercel-inspired**: pure-white paper, near-black ink, hairline grays, and a
+faint technical-drawing grid. All site-wide tokens live in
+`site/src/styles/global.css` (`@theme`).
+
+## What we design with
+
+- **Astro 6** components (`.astro`) — plain HTML, no UI framework.
+- **Tailwind CSS v4** via `@tailwindcss/vite`; tokens declared in `@theme`
+  (there is no `tailwind.config`). Custom motifs (grid, masks, clearings,
+  crosses) are hand-written classes in `global.css`.
+- **Geist** / **Geist Mono** typefaces (`--font-sans` / `--font-mono`). Mono is
+  reserved for code, eyebrow labels, timestamps, and the faux `.md` preview.
+- OG image generated at build with `astro-og-canvas`.
+- North star: restrained developer-product sites — **Vercel**, Linear —
+  generous whitespace, hairline structure, type that sits in *clearings* rather
+  than on top of busy backgrounds.
+
+## Palette tokens (`global.css @theme`)
+
+- `--color-ink` #0a0a0a (near-black) · `--color-ink-soft` #2b2b2b
+- `--color-muted` #5f5f5f · `--color-faint` #6f6f6f — secondary / tertiary text
+- `--color-line` #ececec — **structural** hairlines (frame, nav, card borders)
+- `--color-grid-line` #f1f1f1 — **decorative grid only**, a hair lighter than
+  `--color-line` so the backdrop recedes and never competes with real borders
+- `--color-line-soft` #f4f4f4 · `--color-paper` #ffffff
+
+## Layout & motifs
+
+- Content sits in a centered `max-w-6xl` column framed by hairlines (a real
+  `border-l` plus a 1px outset shadow on the right edge, so both lines land
+  exactly on grid lines — see the comment in `index.astro`). Corner `+`
+  cross-marks (`.cross`) frame it like a technical drawing.
+- Display type uses `.tracking-tightest` (-0.04em) and Tailwind's
+  `text-balance` / `text-pretty`.
+- Full-bleed sections break out with `left-1/2 w-screen -translate-x-1/2`;
+  `html`/`body` use `overflow-x: clip` to hide the breakout overflow without
+  killing the sticky nav.
+
+## Grid backdrop + "clearing"
+
+The graph-paper grid (`.bg-grid`, 64px rhythm, anchored to viewport center) is
+**texture, not structure**. Two rules keep it from feeling busy behind headlines:
+
+1. **Recede the lines.** The grid paints in `--color-grid-line` (lighter than
+   real borders). On the dark "Private by design" band it's white at
+   `opacity-[0.07]`.
+2. **Clear behind the type.** A soft radial wash sits *above* the grid and
+   *below* the content, centered on the headline, so the grid fades to the page
+   color directly under the text and returns to faint texture at the edges — the
+   headline reads as calm negative space (the Vercel move).
+   - `.hero-clear` — **white** wash for the light hero.
+   - `.closing-clear` — **ink** wash for the dark closing band (same idea,
+     inverted color, tuned to that section's shorter vertical rhythm).
+   - Both are responsive (separate mobile / `sm:` radii). The radial center
+     (`at 50% Ypx`) tracks the headline — **re-tune it if a section's vertical
+     spacing changes.** Layering: grid `-z-10` → clear `-z-[9]` → content.
+
+- The hero grid additionally fades at its outer edge via `.mask-radial`
+  (anchored top-center); the closing grid intentionally runs to the band edges.
+- Both grids drift at 0.25× scroll (`gridParallax.ts`) for subtle depth, and
+  honor `prefers-reduced-motion`.

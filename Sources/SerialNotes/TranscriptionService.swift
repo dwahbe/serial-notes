@@ -47,6 +47,9 @@ actor TranscriptionService {
     private var finalAsrModelsTask: Task<AsrModels, Error>?
 
     private var pendingEntries: [TranscriptEntry] = []
+    /// Names enrolled on the mic side this session. Preserved when the final render
+    /// collapses the mic channel to a single "You" during remote calls.
+    private var enrolledMicNames: Set<String> = []
     private var streamingEchoContext = EchoSuppressionContext()
     private var streamingEntryCount = 0
     private var streamingEntrySources = Set<AudioSide>()
@@ -54,6 +57,16 @@ actor TranscriptionService {
     private static let flushDelaySeconds: TimeInterval = 3.0
     private static let echoSuppressionLookbackSeconds: TimeInterval = 30 * 60
     private static let maxEchoSuppressionSystemEntries = 64
+    // Final-render cross-channel echo filter (see CrossChannelEchoFilter). Window
+    // is generous because echo can finalize tens of seconds after its source when
+    // the two channels' EOU segmentation drifts; the dominance guard keeps it safe.
+    private static let echoFilterWindowSeconds: TimeInterval = 45
+    // Verbatim echo lands near 1.0 containment; coincidental shared filler ("sounds
+    // good", "i think so") lands around 0.5. Keep the threshold above that filler
+    // band, and never judge utterances shorter than 4 words — too little signal to
+    // tell a real short turn from an echo, so dropping them loses genuine speech.
+    private static let echoFilterContainmentThreshold = 0.7
+    private static let echoFilterMinWords = 4
     private static let minimumFinalAudioDuration: TimeInterval = 1.0
     private static let diarizerProcessInterval: TimeInterval = 0.75
     private static let streamingErrorReportThreshold = 5
@@ -110,7 +123,9 @@ actor TranscriptionService {
         resumeRewriteDrainContinuations()
 
         // Prime diarizers with saved voice profiles so known speakers get named.
+        enrolledMicNames = []
         for clip in enrollments {
+            if clip.side == .mic { enrolledMicNames.insert(clip.name) }
             let diarizer = sideStates[clip.side]?.diarizer
             do {
                 _ = try diarizer?.enrollSpeaker(
@@ -243,6 +258,7 @@ actor TranscriptionService {
         rewriter = nil
         summarizer = nil
         activeSessionID = nil
+        enrolledMicNames = []
     }
 
     private func deleteAudioFiles(in directory: URL) {
@@ -727,26 +743,31 @@ actor TranscriptionService {
         var transcript = header
         var renderedEntryCount = 0
         var renderedSources = Set<AudioSide>()
-        var echoContext = EchoSuppressionContext()
 
-        for entry in entries.sorted() {
-            let shouldRender: Bool
-            switch entry.source {
-            case .system:
-                echoContext.recordSystemEntry(
-                    entry,
-                    lookbackSeconds: Self.echoSuppressionLookbackSeconds,
-                    maxEntries: Self.maxEchoSuppressionSystemEntries
-                )
-                shouldRender = true
-            case .mic:
-                shouldRender = !echoContext.shouldSuppressMicEntry(
-                    entry,
-                    lookbackSeconds: Self.echoSuppressionLookbackSeconds
-                )
-            }
+        // The final pass holds every entry, so we can use dominance-aware
+        // cross-channel echo removal instead of the streaming path's incremental,
+        // one-directional heuristic — this also catches system-side echo of the
+        // local user (phantom "Person N") that the streaming filter can't touch.
+        let sorted = entries.sorted()
+        let filtered = CrossChannelEchoFilter.filterEchoes(
+            sorted,
+            windowSeconds: Self.echoFilterWindowSeconds,
+            containmentThreshold: Self.echoFilterContainmentThreshold,
+            minWords: Self.echoFilterMinWords
+        )
 
-            guard shouldRender else { continue }
+        // On a remote call (system audio present), collapse the mic to a single "You"
+        // so any echo the filter missed isn't surfaced as a phantom "Voice N". Must run
+        // after the filter — see normalizeMicLabels. In-person sessions (no system
+        // audio) skip this so co-located speakers keep distinct labels.
+        let systemAudioActive = sorted.contains { $0.source == .system }
+        let kept = CrossChannelEchoFilter.normalizeMicLabels(
+            filtered,
+            collapseToYou: systemAudioActive,
+            enrolledMicNames: enrolledMicNames
+        )
+
+        for entry in kept {
             transcript += TranscriptFormatter.entry(
                 speaker: entry.speaker,
                 timestamp: entry.timestamp,

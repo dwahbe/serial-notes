@@ -25,6 +25,84 @@ final class MeetingDetectionService {
         "com.hnc.Discord": KnownMeetingApp(displayName: "Discord", coreAudioBundleSubstrings: ["discord"]),
     ]
 
+    /// Maps a CoreAudio process snapshot to the canonical bundle ID of the known
+    /// meeting app it belongs to, or `nil` if it isn't one of ours. Matching
+    /// mirrors the call-end monitor's matcher: exact bundle ID first (avoids
+    /// Teams v1/v2 ambiguity), then the loose `coreAudioBundleSubstrings` fallback
+    /// (catches helper processes like FaceTime's `avconference`), then a
+    /// display-name fallback. Iterates apps in sorted key order so a substring
+    /// that could match two entries resolves the same way every time.
+    nonisolated static func knownMeetingAppBundleID(
+        for snapshot: MeetingAudioProcessSnapshot
+    ) -> String? {
+        let bundleCandidates = [snapshot.coreAudioBundleIdentifier, snapshot.appBundleIdentifier]
+            .compactMap { $0 }
+
+        // 1. Exact bundle-ID match.
+        for candidate in bundleCandidates where knownMeetingApps[candidate] != nil {
+            return candidate
+        }
+
+        let loweredBundles = bundleCandidates.map { $0.lowercased() }
+        let sortedApps = knownMeetingApps.sorted { $0.key < $1.key }
+
+        // 2. Loose substring match on the CoreAudio / app bundle identifiers.
+        for (bundleID, app) in sortedApps {
+            for substring in app.coreAudioBundleSubstrings {
+                let needle = substring.lowercased()
+                if loweredBundles.contains(where: { $0.contains(needle) }) {
+                    return bundleID
+                }
+            }
+        }
+
+        // 3. Display-name fallback (some helper processes only expose a name).
+        //    Require the whole name to match — a substring test would misattribute
+        //    unrelated processes like "Discord Overlay" or "Slack Helper".
+        if let appName = snapshot.appName?.lowercased() {
+            for (bundleID, app) in sortedApps where appName == app.displayName.lowercased() {
+                return bundleID
+            }
+        }
+
+        return nil
+    }
+
+    /// The canonical bundle IDs of every known meeting app currently capturing
+    /// microphone input, derived purely from CoreAudio process snapshots.
+    nonisolated static func meetingAppsCapturingInput(
+        from snapshots: [MeetingAudioProcessSnapshot]
+    ) -> Set<String> {
+        var owners: Set<String> = []
+        for snapshot in snapshots where snapshot.isRunningInput {
+            if let bundleID = knownMeetingAppBundleID(for: snapshot) {
+                owners.insert(bundleID)
+            }
+        }
+        return owners
+    }
+
+    /// The canonical bundle IDs that represent the *same* meeting app as
+    /// `association` — i.e. the set a process must resolve into (via
+    /// `knownMeetingAppBundleID(for:)`) to count as "belonging" to this
+    /// recording's app. Variants sharing a display name (Teams v1 + v2) are
+    /// grouped so the call-end monitor follows audio from any of them. The
+    /// association's own bundle ID is always included so a recording associated
+    /// with a not-yet-known app still matches its exact processes.
+    nonisolated static func relatedBundleIDs(
+        for association: MeetingRecordingAssociation
+    ) -> Set<String> {
+        let displayName = knownMeetingApps[association.bundleIdentifier]?.displayName
+            ?? association.appName
+        var bundleIDs = Set(
+            knownMeetingApps
+                .filter { $0.value.displayName == displayName }
+                .map(\.key)
+        )
+        bundleIDs.insert(association.bundleIdentifier)
+        return bundleIDs
+    }
+
     private(set) var detectedMeeting: DetectedMeeting?
 
     @ObservationIgnored var onRecordRequested: (() -> Void)?
@@ -38,6 +116,7 @@ final class MeetingDetectionService {
     @ObservationIgnored private var callEndGraceTask: Task<Void, Never>?
     @ObservationIgnored private var callEndCountdownTask: Task<Void, Never>?
     @ObservationIgnored private var neverObservedActiveTask: Task<Void, Never>?
+    @ObservationIgnored private var attributionSettleTask: Task<Void, Never>?
     @ObservationIgnored private var meetingDiagnostics = MeetingSessionDiagnostics()
     @ObservationIgnored private var runningMeetingApps: Set<String> = []
     @ObservationIgnored private var activationOrder: [String] = []  // most recent first
@@ -64,6 +143,10 @@ final class MeetingDetectionService {
         self.recordingState = recordingState
         self.meetingSettings = meetingSettings
         banner.onRecord = { [weak self] in
+            // The user committed to recording what the prompt showed — freeze
+            // attribution so a late settle tick can't move the lock out from under
+            // the about-to-start recording (and its call-end association).
+            self?.cancelAttributionSettle()
             self?.onRecordRequested?()
         }
         banner.onDismiss = { [weak self] in
@@ -97,8 +180,10 @@ final class MeetingDetectionService {
         } else if let current = detectedMeeting {
             suppressedBundleIDs.insert(current.bundleIdentifier)
         }
-        // Stay silent for the rest of this mic-active window. Don't hunt for a
-        // different meeting app — mic activity is driven by the rejected one.
+        // Stop focus-order guessing for the rest of this mic window and keep the
+        // rejected app suppressed. A genuinely different app that becomes the real
+        // mic owner can still prompt (handled in reevaluate) — that's a new call,
+        // not a re-guess of the one the user just dismissed.
         userRejectedThisWindow = true
         reevaluate()
     }
@@ -107,6 +192,7 @@ final class MeetingDetectionService {
     /// trigger a false "meeting detected" prompt.
     func suspendDetection() {
         isSuspended = true
+        cancelAttributionSettle()
         clearDetected()
     }
 
@@ -127,6 +213,9 @@ final class MeetingDetectionService {
 
     func recordingStateChanged() {
         if recordingState?.isRecording == true {
+            // Recording is underway — the lock is now committed to the call-end
+            // association; no late settle tick may move it.
+            cancelAttributionSettle()
             beginCallEndMonitoringIfNeeded()
         } else {
             endCallEndMonitoring()
@@ -332,6 +421,13 @@ final class MeetingDetectionService {
                 runningMeetingApps.insert(bundleID)
             }
         }
+        // Seed the activation order with every already-running meeting app (sorted
+        // for determinism) so the activation tiebreak isn't blind to apps that
+        // launched before us and never fired a didActivate notification. The real
+        // frontmost app is recorded last so it ends up first.
+        for bundleID in runningMeetingApps.sorted() {
+            recordActivation(bundleID)
+        }
         if let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
            Self.knownMeetingApps[frontBundle] != nil {
             recordActivation(frontBundle)
@@ -490,36 +586,135 @@ final class MeetingDetectionService {
 
     // MARK: - Fusion
 
-    private func selectMeetingApp() -> String? {
-        func available(_ bundleID: String) -> Bool {
-            runningMeetingApps.contains(bundleID) && !suppressedBundleIDs.contains(bundleID)
-        }
+    /// `true` when an app is a candidate for attribution: running and not
+    /// suppressed for this mic window.
+    private func isAvailable(_ bundleID: String) -> Bool {
+        runningMeetingApps.contains(bundleID) && !suppressedBundleIDs.contains(bundleID)
+    }
 
-        // 1. Frontmost known meeting app wins — strongest signal of user intent.
-        if let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-           available(frontBundle) {
-            return frontBundle
+    /// Running, non-suppressed known meeting apps capturing the mic *right now*,
+    /// from a single live CoreAudio scan. A canonical bundle ID resolved from a
+    /// helper process (e.g. a Teams helper that only substring-matches "teams") is
+    /// mapped to whichever installed variant is actually running via
+    /// `runningVariant(of:)`, so the real owner is never silently dropped just
+    /// because the mapper picked a sibling bundle ID. Empty when no known meeting
+    /// app is running (cheap early-out — avoids a full process scan that can't
+    /// produce a result) or when the per-process API yields nothing.
+    private func availableInputOwners() -> Set<String> {
+        guard !runningMeetingApps.isEmpty else { return [] }
+        let captured = Self.meetingAppsCapturingInput(
+            from: MeetingAudioProcessReader.currentInputCapturingSnapshots()
+        )
+        var owners: Set<String> = []
+        for bundleID in captured {
+            if let running = runningVariant(of: bundleID), !suppressedBundleIDs.contains(running) {
+                owners.insert(running)
+            }
         }
+        return owners
+    }
 
-        // 2. Otherwise prefer the most recently activated known meeting app.
-        if let recent = activationOrder.first(where: available) {
+    /// The single known meeting app that actually holds the mic — the
+    /// authoritative attribution signal. `nil` when none can be determined
+    /// (per-process API unavailable, owner isn't a known/running app, or the input
+    /// flag hasn't propagated yet), in which case callers fall back to focus-order
+    /// heuristics. Multiple simultaneous capturers (a Slack huddle *and* a Zoom
+    /// call) are disambiguated deterministically.
+    private func availableInputOwner() -> String? {
+        disambiguate(among: availableInputOwners())
+    }
+
+    /// Maps a canonical bundle ID to the installed variant that is actually
+    /// running: itself if running, else a sibling sharing its display name (e.g.
+    /// Teams v1 → v2). `nil` if no variant is running.
+    private func runningVariant(of bundleID: String) -> String? {
+        if runningMeetingApps.contains(bundleID) { return bundleID }
+        guard let displayName = Self.knownMeetingApps[bundleID]?.displayName else { return nil }
+        return runningMeetingApps
+            .filter { Self.knownMeetingApps[$0]?.displayName == displayName }
+            .sorted()
+            .first
+    }
+
+    /// Deterministically pick one bundle ID from a candidate set: frontmost →
+    /// most-recently-activated → alphabetical (never `Set.first`, which is
+    /// non-deterministic).
+    private func disambiguate(among candidates: Set<String>) -> String? {
+        if candidates.count <= 1 { return candidates.first }
+        if let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           candidates.contains(front) {
+            return front
+        }
+        if let recent = activationOrder.first(where: { candidates.contains($0) }) {
             return recent
         }
+        return candidates.sorted().first
+    }
 
-        // 3. Deterministic fallback: alphabetical by bundle ID (Set order is undefined).
+    /// Fallback attribution when no app reports mic ownership: frontmost known
+    /// meeting app → most-recently-activated → alphabetical, among running,
+    /// non-suppressed apps.
+    private func focusOrderCandidate() -> String? {
+        if let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           isAvailable(front) {
+            return front
+        }
+        if let recent = activationOrder.first(where: isAvailable) {
+            return recent
+        }
         return runningMeetingApps.filter { !suppressedBundleIDs.contains($0) }.sorted().first
     }
 
+    /// After locking attribution via the focus-order fallback (no app yet reports
+    /// mic ownership), re-check until one of: audio truth confirms the lock, audio
+    /// truth points at a different app (then `reevaluate()` corrects it), or a
+    /// generous budget elapses. The per-process input flag can land a beat — and
+    /// occasionally a couple of seconds (cold launch, "join with audio?" prompt) —
+    /// after the device-level mic-running signal, so the window is bounded but not
+    /// stingy. Bounded so it can't busy-loop; cancelled on mic cycle, record, and
+    /// suspend.
+    private func scheduleAttributionSettle() {
+        attributionSettleTask?.cancel()
+        attributionSettleTask = Task { @MainActor [weak self] in
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, let self else { return }
+                guard self.micActive,
+                      let locked = self.lockedBundleID,
+                      self.recordingState?.isRecording != true,
+                      !self.isSuspended,
+                      !self.userRejectedThisWindow else { return }
+                let owners = self.availableInputOwners()
+                if owners.isEmpty { continue }        // input flag not propagated yet — keep waiting
+                if owners.contains(locked) { return } // lock confirmed by audio truth
+                self.reevaluate()                     // a different app owns the mic → correct, then done
+                return
+            }
+        }
+    }
+
+    private func cancelAttributionSettle() {
+        attributionSettleTask?.cancel()
+        attributionSettleTask = nil
+    }
+
     // State machine for prompt attribution:
-    //   · While mic is continuously active, we LOCK to one bundle ID — the one
-    //     present at mic-activation time. Frontmost/activation changes do NOT
-    //     re-attribute (avoids "Slack call detected" when Zoom warm-holds the
-    //     mic after a call ends and the user switches to Slack).
-    //   · If the locked app terminates mid-window, clear detection but do not
-    //     hunt for a replacement — the mic is still warm from the dead app, not
-    //     from any newly-candidate one.
-    //   · Dismiss and Stop-Recording set `userRejectedThisWindow` so no further
-    //     prompts fire until the mic cycles (signals end-of-call).
+    //   · The known meeting app actually capturing the mic (CoreAudio per-process
+    //     input) is the authoritative signal. We LOCK to one bundle ID for the
+    //     mic-active window. While the locked app keeps holding the mic,
+    //     frontmost/activation changes do NOT re-attribute (avoids "Slack call
+    //     detected" when Zoom warm-holds the mic after a call ends and the user
+    //     switches to Slack — Zoom is still the input owner).
+    //   · The lock moves only when audio truth says a *different* known app now
+    //     owns the mic and the locked one no longer does — this corrects an
+    //     initial focus-order mis-lock made before the input flag propagated.
+    //   · When no app reports ownership, fall back to focus order and re-check
+    //     briefly (scheduleAttributionSettle) for a late-arriving input flag. If
+    //     the locked app then terminates mid-window with no owner, clear and wait
+    //     for the mic to cycle rather than hunting for a replacement.
+    //   · Dismiss and Stop-Recording suppress the rejected app and stop
+    //     focus-order guessing for the window; a genuinely different audio owner
+    //     can still prompt (a real new call), but a dismissed app stays silent.
     //   · Mic inactive is the only reset: clears lock, suppression, and rejection.
     private func reevaluate() {
         if isSuspended {
@@ -528,11 +723,13 @@ final class MeetingDetectionService {
         }
 
         if recordingState?.isRecording == true {
+            cancelAttributionSettle()
             clearDetected()
             return
         }
 
         if !micActive {
+            cancelAttributionSettle()
             suppressedBundleIDs.removeAll()
             lastNotifiedBundleID = nil
             lockedBundleID = nil
@@ -541,31 +738,65 @@ final class MeetingDetectionService {
             return
         }
 
-        // Mic is active. If the user already rejected for this window, stay quiet.
+        // Mic is active. Resolve who actually holds the mic once, up front.
+        let owners = availableInputOwners()
+
+        // If the user already rejected an app for this window, stay quiet — UNLESS
+        // audio truth now shows a *different*, non-rejected app is the real mic
+        // owner (a genuinely new call in the same continuous mic window). We never
+        // fall back to focus order after a dismiss; only a confirmed audio owner
+        // re-opens the prompt, and rejected apps are excluded from `owners`.
         if userRejectedThisWindow {
-            clearDetected()
+            if let owner = disambiguate(among: owners),
+               let appName = Self.knownMeetingApps[owner]?.displayName {
+                lockedBundleID = owner
+                applyDetection(bundleID: owner, appName: appName)
+            } else {
+                clearDetected()
+            }
             return
         }
 
-        // Sticky attribution: if we locked onto an app earlier in this window,
-        // keep it (even if something else became frontmost).
+        // Sticky attribution: while the locked app is still the one capturing the
+        // mic, keep it — frontmost/activation changes do NOT move it.
         if let locked = lockedBundleID {
+            if owners.contains(locked), let appName = Self.knownMeetingApps[locked]?.displayName {
+                applyDetection(bundleID: locked, appName: appName)
+                return
+            }
+            // Locked app no longer holds the mic but a different known app does →
+            // correct the attribution (fixes an initial focus-order mis-lock).
+            if let owner = disambiguate(among: owners),
+               let appName = Self.knownMeetingApps[owner]?.displayName {
+                lockedBundleID = owner
+                applyDetection(bundleID: owner, appName: appName)
+                return
+            }
+            // No app reports ownership. Keep the lock while its app is still
+            // running; otherwise it quit mid-window — clear and wait for the mic
+            // to cycle rather than hunting for a replacement.
             if runningMeetingApps.contains(locked),
                let appName = Self.knownMeetingApps[locked]?.displayName {
                 applyDetection(bundleID: locked, appName: appName)
                 return
             }
-            // Locked app quit mid-window. Don't re-attribute — wait for mic cycle.
             lockedBundleID = nil
             clearDetected()
             return
         }
 
-        // No prior lock: this is the start of a mic-active window (or a fresh
-        // reevaluate after a reset). Pick once and lock.
-        if let bundleID = selectMeetingApp(), let appName = Self.knownMeetingApps[bundleID]?.displayName {
-            lockedBundleID = bundleID
-            applyDetection(bundleID: bundleID, appName: appName)
+        // No prior lock: start of a mic-active window. Prefer the real mic owner;
+        // otherwise lock via focus order and re-check briefly, since the
+        // per-process input flag often lands a beat after the mic-running signal.
+        if let owner = disambiguate(among: owners),
+           let appName = Self.knownMeetingApps[owner]?.displayName {
+            lockedBundleID = owner
+            applyDetection(bundleID: owner, appName: appName)
+        } else if let fallback = focusOrderCandidate(),
+                  let appName = Self.knownMeetingApps[fallback]?.displayName {
+            lockedBundleID = fallback
+            applyDetection(bundleID: fallback, appName: appName)
+            scheduleAttributionSettle()
         } else {
             clearDetected()
         }

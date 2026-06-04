@@ -1,4 +1,3 @@
-import AppKit
 import CoreAudio
 import Foundation
 
@@ -27,7 +26,7 @@ final class MeetingAudioActivityMonitor {
     }
 
     private func registerProcessListListener() {
-        var addr = Self.makeProcessObjectListAddress()
+        var addr = MeetingAudioProcessReader.makeProcessObjectListAddress()
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -69,7 +68,7 @@ final class MeetingAudioActivityMonitor {
 
     private func installActivityListeners(for processID: AudioObjectID) {
         for selector in [kAudioProcessPropertyIsRunningInput, kAudioProcessPropertyIsRunningOutput] {
-            var addr = Self.makeProcessAddress(selector)
+            var addr = MeetingAudioProcessReader.makeProcessAddress(selector)
             let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -145,160 +144,33 @@ final class MeetingAudioActivityMonitor {
         if let providedProcessIDs {
             processIDs = providedProcessIDs
         } else {
-            processIDs = try Self.readProcessObjectList()
+            processIDs = try MeetingAudioProcessReader.readProcessObjectList()
         }
         return processIDs.compactMap { processID -> MeetingAudioProcessSnapshot? in
-            let snapshot = Self.snapshot(processID: processID)
+            let snapshot = MeetingAudioProcessReader.snapshot(processID: processID)
             return matcher.matches(snapshot) ? snapshot : nil
         }
     }
-
-    // MARK: - Matching
-
-    // MARK: - CoreAudio Reads
-
-    private static func makeProcessObjectListAddress() -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    private static func makeProcessAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    private static func readProcessObjectList() throws -> [AudioObjectID] {
-        var addr = makeProcessObjectListAddress()
-        var size: UInt32 = 0
-        let sizeStatus = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &addr,
-            0,
-            nil,
-            &size
-        )
-        guard sizeStatus == noErr else {
-            throw MonitorError.coreAudio("AudioObjectGetPropertyDataSize(process list)", sizeStatus)
-        }
-        guard size >= MemoryLayout<AudioObjectID>.size else { return [] }
-
-        let count = Int(size) / MemoryLayout<AudioObjectID>.size
-        var processIDs = Array(repeating: AudioObjectID(0), count: count)
-        let dataStatus = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &addr,
-            0,
-            nil,
-            &size,
-            &processIDs
-        )
-        guard dataStatus == noErr else {
-            throw MonitorError.coreAudio("AudioObjectGetPropertyData(process list)", dataStatus)
-        }
-        return processIDs.filter { $0 != kAudioObjectUnknown }
-    }
-
-    private static func snapshot(processID: AudioObjectID) -> MeetingAudioProcessSnapshot {
-        let pid = readPID(processID: processID)
-        let app = pid.flatMap { NSRunningApplication(processIdentifier: $0) }
-        return MeetingAudioProcessSnapshot(
-            processObjectID: processID,
-            pid: pid.map { Int32($0) },
-            coreAudioBundleIdentifier: readBundleID(processID: processID),
-            appBundleIdentifier: app?.bundleIdentifier,
-            appName: app?.localizedName,
-            isRunningInput: readRunningFlag(processID: processID, selector: kAudioProcessPropertyIsRunningInput),
-            isRunningOutput: readRunningFlag(processID: processID, selector: kAudioProcessPropertyIsRunningOutput)
-        )
-    }
-
-    private static func readPID(processID: AudioObjectID) -> pid_t? {
-        var value = pid_t(0)
-        var size = UInt32(MemoryLayout<pid_t>.size)
-        var addr = makeProcessAddress(kAudioProcessPropertyPID)
-        let status = AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &value)
-        guard status == noErr, value > 0 else { return nil }
-        return value
-    }
-
-    private static func readBundleID(processID: AudioObjectID) -> String? {
-        var unmanaged: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var addr = makeProcessAddress(kAudioProcessPropertyBundleID)
-        let status = AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &unmanaged)
-        guard status == noErr, let unmanaged else { return nil }
-        return unmanaged.takeRetainedValue() as String
-    }
-
-    private static func readRunningFlag(
-        processID: AudioObjectID,
-        selector: AudioObjectPropertySelector
-    ) -> Bool {
-        var value: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        var addr = makeProcessAddress(selector)
-        let status = AudioObjectGetPropertyData(processID, &addr, 0, nil, &size, &value)
-        return status == noErr && value != 0
-    }
 }
 
-private enum MonitorError: LocalizedError {
-    case coreAudio(String, OSStatus)
-
-    var errorDescription: String? {
-        switch self {
-        case .coreAudio(let operation, let status):
-            return "\(operation) failed with status \(status)"
-        }
-    }
-}
-
+/// Decides whether a CoreAudio process snapshot belongs to the meeting app a
+/// recording is associated with. Rather than reimplement the exact /
+/// substring / display-name rules, it defers to the single shared mapper
+/// (`MeetingDetectionService.knownMeetingAppBundleID(for:)`) and asks whether
+/// the resolved app is one of the association's related bundle IDs — so the
+/// call-end monitor and the start-attribution path can never drift.
 private struct MeetingAudioProcessMatcher {
-    let appName: String
-    let exactBundleIDs: Set<String>
-    let bundleSubstrings: [String]
+    let relatedBundleIDs: Set<String>
 
     init(association: MeetingRecordingAssociation) {
-        appName = association.appName.lowercased()
-        let app = MeetingDetectionService.knownMeetingApps[association.bundleIdentifier]
-        let displayName = app?.displayName ?? association.appName
-        let relatedApps = MeetingDetectionService.knownMeetingApps.filter { _, knownApp in
-            knownApp.displayName == displayName
-        }
-        var exactBundleIDs = Set(relatedApps.map(\.key))
-        exactBundleIDs.insert(association.bundleIdentifier)
-        self.exactBundleIDs = exactBundleIDs
-        self.bundleSubstrings = Array(
-            Set(relatedApps.flatMap { $0.value.coreAudioBundleSubstrings }.map { $0.lowercased() })
-        )
+        relatedBundleIDs = MeetingDetectionService.relatedBundleIDs(for: association)
     }
 
     func matches(_ snapshot: MeetingAudioProcessSnapshot) -> Bool {
-        if let bundleID = snapshot.coreAudioBundleIdentifier,
-           bundleMatches(bundleID) {
-            return true
+        guard let bundleID = MeetingDetectionService.knownMeetingAppBundleID(for: snapshot) else {
+            return false
         }
-        if let bundleID = snapshot.appBundleIdentifier,
-           bundleMatches(bundleID) {
-            return true
-        }
-        if let snapshotAppName = snapshot.appName?.lowercased(),
-           snapshotAppName.contains(appName) {
-            return true
-        }
-        return false
-    }
-
-    private func bundleMatches(_ bundleID: String) -> Bool {
-        if exactBundleIDs.contains(bundleID) { return true }
-        let lower = bundleID.lowercased()
-        return bundleSubstrings.contains { lower.contains($0) }
+        return relatedBundleIDs.contains(bundleID)
     }
 }
 
@@ -326,11 +198,9 @@ private final class MeetingAudioActivityMonitorCleanup: @unchecked Sendable {
 
     func removeAll() {
         if let processListBlock {
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyProcessObjectList,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
+            // Address must byte-match the one used to add the listener — go
+            // through the shared maker so add/remove can't drift.
+            var addr = MeetingAudioProcessReader.makeProcessObjectListAddress()
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
                 &addr,
@@ -357,11 +227,7 @@ private final class MeetingAudioActivityMonitorCleanup: @unchecked Sendable {
     private func removeProcessListeners(for processID: AudioObjectID) {
         let processBlocks = processBlocksByProcessID[processID] ?? []
         for processBlock in processBlocks {
-            var addr = AudioObjectPropertyAddress(
-                mSelector: processBlock.selector,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
+            var addr = MeetingAudioProcessReader.makeProcessAddress(processBlock.selector)
             AudioObjectRemovePropertyListenerBlock(
                 processBlock.processID,
                 &addr,

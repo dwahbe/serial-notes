@@ -91,18 +91,23 @@ const rows: Row[] = [
     </div>
 
     <!-- table — scrolls horizontally on narrow screens with the feature
-         column pinned so the row labels stay readable -->
-    <div class="mt-9 overflow-x-auto sm:mt-12 [-ms-overflow-style:none] [scrollbar-width:thin]">
-      <table class="w-full min-w-[660px] border-separate border-spacing-0 text-left">
+         column pinned (.cmp-rowhead) so the row labels stay readable.
+         overscroll-x-none stops the elastic rubber-band from dragging the
+         pinned column when you reverse scroll direction at the edge. -->
+    <div
+      data-cmp-scroller
+      class="mt-9 overflow-x-auto overscroll-x-none sm:mt-12 [-ms-overflow-style:none] [scrollbar-width:thin]"
+    >
+      <table class="w-full min-w-[500px] border-separate border-spacing-0 text-left sm:min-w-[660px]">
         <thead>
           <tr>
-            <th class="cmp-rowhead w-[34%] px-4 py-4 sm:w-[30%]"></th>
+            <th class="cmp-rowhead w-[136px] px-3 py-4 sm:w-[30%] sm:px-4"></th>
             {
               cols.map((col) => (
                 <th
                   scope="col"
                   class:list={[
-                    "relative px-4 pb-4 pt-5 text-center align-middle",
+                    "relative px-3 pb-4 pt-5 text-center align-middle sm:px-4",
                     col.highlight && "cmp-fav",
                   ]}
                 >
@@ -157,7 +162,7 @@ const rows: Row[] = [
               <tr>
                 <th
                   scope="row"
-                  class="cmp-rowhead cmp-cell px-4 py-4 text-[15px] font-medium text-ink"
+                  class="cmp-rowhead cmp-cell px-3 py-4 text-[13.5px] font-medium leading-snug text-ink sm:px-4 sm:text-[15px]"
                 >
                   {row.label}
                 </th>
@@ -167,7 +172,7 @@ const rows: Row[] = [
                     return (
                       <td
                         class:list={[
-                          "cmp-cell px-4 py-4 text-center",
+                          "cmp-cell px-3 py-4 text-center sm:px-4",
                           col.highlight && "cmp-fav",
                         ]}
                       >
@@ -245,12 +250,21 @@ const rows: Row[] = [
     border-top: 1px solid var(--color-line);
   }
 
-  /* Pin the feature-label column while the competitor columns scroll. */
+  /* Pin the feature-label column while the competitor columns scroll.
+     z-index keeps it above the scrolling competitor cells. */
   .cmp-rowhead {
     position: sticky;
     left: 0;
     z-index: 1;
     background: var(--color-paper);
+  }
+
+  /* Once the competitor columns have scrolled at all, a soft right-edge shadow
+     signals that the label column is frozen (and hides any sub-pixel bleed of
+     scrolling content past its edge). Toggled by the scroll listener below. */
+  [data-cmp-scroller][data-scrolled="true"] .cmp-rowhead {
+    box-shadow: 8px 0 8px -8px rgba(0, 0, 0, 0.18);
+    clip-path: inset(0 -16px 0 0);
   }
 
   /* The recommended column: a soft tint band the full height of the table. */
@@ -277,3 +291,16 @@ const rows: Row[] = [
     background: var(--color-ink);
   }
 </style>
+
+<script>
+  // Flag the scroller once the competitor columns have been scrolled, so the
+  // frozen label column gets a soft right-edge shadow (see [data-scrolled] CSS).
+  for (const scroller of document.querySelectorAll<HTMLElement>("[data-cmp-scroller]")) {
+    const sync = () => {
+      const next = scroller.scrollLeft > 0 ? "true" : "false";
+      if (scroller.dataset.scrolled !== next) scroller.dataset.scrolled = next;
+    };
+    scroller.addEventListener("scroll", sync, { passive: true });
+    sync();
+  }
+</script>

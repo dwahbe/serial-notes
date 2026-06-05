@@ -1,6 +1,8 @@
 ---
-// "Plain Markdown → every app" trust strip. Official brand marks, always
-// shown in full brand color. Per-icon heights optically balance the
+// "Fully compatible with" trust strip — the apps that read the plain-Markdown
+// export, shown as official brand marks in full brand color. The ".md works
+// anywhere" point is carried by the trailing "+ anything that reads .md" line
+// rather than a dedicated Markdown mark. Per-icon heights optically balance the
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
 const apps = [
@@ -19,18 +21,6 @@ const apps = [
     </p>
 
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
-      <!-- Markdown (official mark) -->
-      <div class="group flex items-center gap-2.5 text-faint transition-colors hover:text-ink">
-        <svg width="44" height="27" viewBox="0 0 208 128" fill="none" aria-hidden="true">
-          <rect x="5" y="5" width="198" height="118" rx="14" stroke="currentColor" stroke-width="9"></rect>
-          <path
-            fill="currentColor"
-            d="M30 98V30h19l20 25 20-25h19v68H89V57L69 82 49 57v41zm125 0-30-33h19V30h22v35h19z"
-          ></path>
-        </svg>
-        <span class="text-sm font-medium">Markdown</span>
-      </div>
-
       {
         apps.map(({ name, file, h }) => (
           <div class="group flex items-center gap-2.5">

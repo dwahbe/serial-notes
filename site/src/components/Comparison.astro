@@ -1,0 +1,279 @@
+---
+// "How it compares" — a hairline comparison table (Vercel-style) that sets
+// Serial Notes against the closest cloud meeting-notes tools. The three
+// headline differentiators (free, open source, on-device) lead the rows; the
+// Serial Notes column is tinted to read as the recommended choice.
+//
+// Single source of truth for the data lives in `cols` + `rows` below — update
+// a competitor fact in one place. Cell values:
+//   true   → check (a capability the product has)
+//   false  → muted dash (it doesn't)
+//   string → rendered as text (a qualified answer, e.g. a price or "Partial")
+//
+// Competitor facts verified June 2026 from each product's own pricing/security
+// pages plus independent reviews:
+//   Granola   — Free up to 25 meetings, then ~$14+/user/mo; closed source;
+//               records locally (no bot) but enhances notes via cloud AI
+//               (OpenAI/Anthropic), so it needs a connection; account required.
+//               https://www.granola.ai/pricing · https://www.granola.ai/security
+//   Otter.ai  — Free 300 min/mo, then ~$8.33+/user/mo; closed source; cloud
+//               transcription; Otter Assistant bot joins the call; account
+//               required. https://otter.ai/pricing
+//   Fathom    — Free unlimited recording but 5 AI summaries/mo, then ~$15+/mo;
+//               closed source; cloud; bot joins the call by default; account
+//               required. https://www.fathom.ai/pricing
+// `mark` drives the column header logo. kind "serial" renders our inline
+// waveform tile; kind "img" points at a brand mark in /public/logos. Per-mark
+// heights optically balance the wide Otter wordmark-glyph against the squarer
+// tiles. Granola is an official SVG (svgl); Otter + Fathom are their own
+// high-res app-icon PNGs (they ship no icon-only SVG).
+const cols = [
+  { key: "serial", name: "Serial Notes", highlight: true, mark: { kind: "serial", src: "", h: 28, rounded: false } },
+  { key: "granola", name: "Granola", highlight: false, mark: { kind: "img", src: "/logos/granola.svg", h: 24, rounded: false } },
+  { key: "otter", name: "Otter.ai", highlight: false, mark: { kind: "img", src: "/logos/otter.png", h: 18, rounded: false } },
+  { key: "fathom", name: "Fathom", highlight: false, mark: { kind: "img", src: "/logos/fathom.png", h: 26, rounded: true } },
+] as const;
+
+type Key = (typeof cols)[number]["key"];
+type Cell = boolean | string;
+type Row = { label: string; cells: Record<Key, Cell> };
+
+const rows: Row[] = [
+  {
+    label: "Price",
+    cells: {
+      serial: "Free, unlimited",
+      granola: "Free*, then $14/mo",
+      otter: "Free*, then $8/mo",
+      fathom: "Free*, then $15/mo",
+    },
+  },
+  {
+    label: "Open source",
+    cells: { serial: true, granola: false, otter: false, fathom: false },
+  },
+  {
+    label: "Runs fully on-device",
+    cells: { serial: true, granola: "Partial", otter: false, fathom: false },
+  },
+  {
+    label: "Works offline",
+    cells: { serial: true, granola: false, otter: false, fathom: false },
+  },
+  {
+    label: "No account required",
+    cells: { serial: true, granola: false, otter: false, fathom: false },
+  },
+  {
+    label: "No bot joins the call",
+    cells: { serial: true, granola: true, otter: false, fathom: false },
+  },
+  {
+    label: "Notes are plain local files",
+    cells: { serial: true, granola: false, otter: false, fathom: false },
+  },
+];
+---
+
+<section id="compare" class="border-t border-line">
+  <div class="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
+    <!-- heading -->
+    <div class="max-w-2xl">
+      <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">How it compares</p>
+      <h2 class="tracking-tightest mt-3 text-balance text-3xl font-semibold leading-tight text-ink sm:text-4xl">
+        Free, open source, and entirely on your Mac
+      </h2>
+      <p class="mt-4 max-w-lg text-pretty text-[17px] leading-relaxed text-muted">
+        Most meeting tools are cloud subscriptions that need an account and a
+        connection. Serial Notes is a free, open-source app that runs start to
+        finish on your machine.
+      </p>
+    </div>
+
+    <!-- table — scrolls horizontally on narrow screens with the feature
+         column pinned so the row labels stay readable -->
+    <div class="mt-9 overflow-x-auto sm:mt-12 [-ms-overflow-style:none] [scrollbar-width:thin]">
+      <table class="w-full min-w-[660px] border-separate border-spacing-0 text-left">
+        <thead>
+          <tr>
+            <th class="cmp-rowhead w-[34%] px-4 py-4 sm:w-[30%]"></th>
+            {
+              cols.map((col) => (
+                <th
+                  scope="col"
+                  class:list={[
+                    "relative px-4 pb-4 pt-5 text-center align-middle",
+                    col.highlight && "cmp-fav",
+                  ]}
+                >
+                  {col.highlight && <span class="cmp-fav-accent" aria-hidden="true" />}
+                  <span class="flex flex-col items-center gap-2.5">
+                    <span class="flex h-8 items-center justify-center">
+                      {col.mark.kind === "serial" ? (
+                        <span
+                          class="grid place-items-center rounded-[7px] bg-ink text-white shadow-sm"
+                          style={`height:${col.mark.h}px;width:${col.mark.h}px`}
+                        >
+                          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.1" />
+                            <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                              <line x1="4.6" y1="6" x2="4.6" y2="10" />
+                              <line x1="6.3" y1="4.4" x2="6.3" y2="11.6" />
+                              <line x1="8" y1="3.6" x2="8" y2="12.4" />
+                              <line x1="9.7" y1="5" x2="9.7" y2="11" />
+                              <line x1="11.4" y1="5.8" x2="11.4" y2="10.2" />
+                            </g>
+                          </svg>
+                        </span>
+                      ) : (
+                        <img
+                          src={col.mark.src}
+                          alt=""
+                          aria-hidden="true"
+                          decoding="async"
+                          loading="lazy"
+                          style={`height:${col.mark.h}px`}
+                          class:list={["w-auto", col.mark.rounded && "rounded-[6px]"]}
+                        />
+                      )}
+                    </span>
+                    <span
+                      class:list={[
+                        "text-[15px] font-semibold leading-none",
+                        col.highlight ? "text-ink" : "text-muted",
+                      ]}
+                    >
+                      {col.name}
+                    </span>
+                  </span>
+                </th>
+              ))
+            }
+          </tr>
+        </thead>
+        <tbody>
+          {
+            rows.map((row) => (
+              <tr>
+                <th
+                  scope="row"
+                  class="cmp-rowhead cmp-cell px-4 py-4 text-[15px] font-medium text-ink"
+                >
+                  {row.label}
+                </th>
+                {
+                  cols.map((col) => {
+                    const v = row.cells[col.key];
+                    return (
+                      <td
+                        class:list={[
+                          "cmp-cell px-4 py-4 text-center",
+                          col.highlight && "cmp-fav",
+                        ]}
+                      >
+                        {typeof v === "boolean" ? (
+                          v ? (
+                            <svg
+                              width="19"
+                              height="19"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class:list={[
+                                "mx-auto",
+                                col.highlight ? "text-ink" : "text-ink/55",
+                              ]}
+                              aria-label="Yes"
+                              role="img"
+                            >
+                              <path d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.4"
+                              stroke-linecap="round"
+                              class="mx-auto text-[#cfcfcf]"
+                              aria-label="No"
+                              role="img"
+                            >
+                              <path d="M6 12h12" />
+                            </svg>
+                          )
+                        ) : (
+                          <span
+                            class:list={[
+                              "text-[13.5px] leading-snug",
+                              col.highlight ? "font-medium text-ink" : "text-muted",
+                            ]}
+                          >
+                            {v}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })
+                }
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <p class="mt-5 max-w-3xl text-[12.5px] leading-relaxed text-faint">
+      <span class="font-mono">*</span> Free tiers are capped — Granola 25 meetings
+      total, Otter 300 minutes/month, Fathom 5 AI summaries/month. Granola records
+      locally but enhances notes with cloud AI, so it needs a connection. Otter and
+      Fathom now offer bot-free capture modes but default to a bot that joins the
+      call. Details verified June 2026; see each product&rsquo;s pricing page.
+    </p>
+  </div>
+</section>
+
+<style>
+  /* Row separators via top borders on each cell (border-separate keeps the
+     sticky first column's edges crisp where border-collapse would drop them). */
+  .cmp-cell {
+    border-top: 1px solid var(--color-line);
+  }
+
+  /* Pin the feature-label column while the competitor columns scroll. */
+  .cmp-rowhead {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--color-paper);
+  }
+
+  /* The recommended column: a soft tint band the full height of the table. */
+  .cmp-fav {
+    background: var(--color-line-soft);
+  }
+  thead .cmp-fav {
+    position: relative;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+  }
+  tbody tr:last-child .cmp-fav {
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+  }
+  /* 2px ink accent across the top of the favored header. */
+  .cmp-fav-accent {
+    position: absolute;
+    top: 0;
+    left: 12px;
+    right: 12px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--color-ink);
+  }
+</style>

@@ -1,6 +1,6 @@
 import Foundation
 
-/// A saved voice profile used to cross-session speaker identity.
+/// A saved voice profile used to carry speaker identity across sessions.
 ///
 /// Profiles are stored as a pair of files in the profile directory:
 /// - `<id>.json` — name + kind

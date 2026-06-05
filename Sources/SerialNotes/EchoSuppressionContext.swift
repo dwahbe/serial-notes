@@ -21,10 +21,11 @@ struct TranscriptEntry: Comparable, Sendable {
 /// utterance is likely an echo of remote speech (e.g., the mic picked up a
 /// participant talking through the laptop speakers).
 ///
-/// Two callers — the streaming pipeline (`TranscriptionService`) keeps one
-/// long-lived context across the session, and the final high-accuracy render
-/// pass builds a fresh one. Both apply the same n-gram containment heuristic
-/// from `TranscriptTextProcessing.isLikelyEcho`.
+/// Used by the streaming pipeline (`TranscriptionService`), which keeps one
+/// long-lived context across the session and applies the n-gram containment
+/// heuristic from `TranscriptTextProcessing.isLikelyEcho`. The final
+/// high-accuracy render pass instead uses the dominance-aware
+/// `CrossChannelEchoFilter` below.
 struct EchoSuppressionContext {
     private var systemEntries: [TranscriptEntry] = []
     private var systemWords: [String] = []
@@ -155,8 +156,9 @@ enum CrossChannelEchoFilter {
     /// name, or "You" when unset (`primaryName`) — matching the Me/Them model that
     /// passive recorders (Granola, Notion) ship. During a remote call any extra mic
     /// speaker is acoustic bleed, not a second person, so labelling it "Voice N" is
-    /// misleading. Run this AFTER `filterEchoes` — collapsing first would make echo
-    /// lines part of the dominant primary speaker, which the filter never drops.
+    /// misleading. Run this AFTER `filterEchoes` — collapsing first would relabel
+    /// every mic entry (echoes included) to `primaryName`, making that one label the
+    /// dominant mic speaker, and `filterEchoes` never drops a channel's dominant speaker.
     ///
     /// `enrolledMicNames` (voices the user explicitly enrolled on the mic side) are
     /// preserved, and `collapseToPrimary` is false for pure in-person recordings (no

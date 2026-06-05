@@ -71,7 +71,8 @@ final class VoiceProfileStore {
     }
 
     /// Save a profile, writing its JSON manifest + enrollment clip.
-    /// If a profile of the same kind already exists for `.you`, it's replaced.
+    /// Saving a `.you` profile replaces the existing one (only a single `.you`
+    /// is kept); `.other` profiles are always added alongside any existing ones.
     func save(name: String, kind: VoiceProfile.Kind, clipURL: URL) throws -> VoiceProfile {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = trimmed.isEmpty ? fallbackName(for: kind) : trimmed

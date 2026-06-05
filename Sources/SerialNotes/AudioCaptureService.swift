@@ -61,7 +61,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         statsLock.withLock { $0 = AudioCaptureStats() }
 
         // Request mic permission upfront — accessing AVAudioEngine.inputNode
-        // without permission can crash on macOS 15+.
+        // without permission can crash.
         let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
 
         if IsSystemAudioTapAvailable() {
@@ -108,8 +108,8 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
         // --- System Audio via raw AudioDeviceIOProc ---
         // AVAudioEngine + installTap doesn't reliably surface sub-tap audio
-        // from a tap-aggregate device on macOS 14+. Use a raw IOProc so the
-        // audio HAL delivers buffers directly.
+        // from a tap-aggregate device. Use a raw IOProc so the audio HAL
+        // delivers buffers directly.
         //
         // Both starts can throw: the IOProc setup leaves a running real-time
         // thread + aggregate device behind on success, so a subsequent mic
@@ -204,9 +204,9 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
                     dest[f] = sum / Float(channels)
                 }
             } else {
-                // Non-interleaved: each channel is in its own AudioBuffer; use buffer 0
-                // as the mono source. (Common for taps; we got here because numBuffers
-                // > 1 wasn't iterated. Treat as mono passthrough.)
+                // Non-interleaved multichannel in a single AudioBuffer: floatChannelData
+                // isn't laid out for per-channel access here, so we take buffer 0's
+                // contiguous span as a mono source. (Common for taps.)
                 dest.update(from: src, count: writeFrames)
             }
 

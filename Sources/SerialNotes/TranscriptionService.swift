@@ -200,11 +200,16 @@ actor TranscriptionService {
         }
     }
 
+    /// Returns the number of unrecognized system-side speakers for which an
+    /// enrollment clip + `speakers.json` entry was written (0 when none / not
+    /// applicable). The caller uses it to decide whether to offer post-meeting naming.
+    @discardableResult
     func endSession(
         summarySettings: SummarySettings.Snapshot = .disabled,
         keepAudioFiles: Bool = true,
-        summaryCutoff: TimeInterval? = nil
-    ) async {
+        summaryCutoff: TimeInterval? = nil,
+        extractSpeakers: Bool = true
+    ) async -> Int {
         for side in AudioSide.allCases {
             do {
                 if let text = try await sideStates[side]?.asr?.finish() {
@@ -245,6 +250,7 @@ actor TranscriptionService {
 
         // Both paths leave a finalized transcript on disk — splice summary +
         // action items between the header and the first entry when requested.
+        var pendingSpeakerCount = 0
         if let directory = sessionDirectory {
             await spliceSummarySections(
                 sessionDirectory: directory,
@@ -252,8 +258,20 @@ actor TranscriptionService {
                 settings: summarySettings,
                 summaryCutoff: summaryCutoff
             )
+            // Extract enrollment clips for unrecognized system speakers so the user can
+            // name them afterwards. Must run after the high-accuracy render (the "Person N"
+            // labels are now authoritative) and before audio cleanup (it reads system.wav).
+            // Skipped on app quit (extractSpeakers == false) so termination isn't delayed by
+            // clip I/O for a prompt that's suppressed anyway.
+            if extractSpeakers,
+               let transcript = try? String(
+                   contentsOf: directory.appendingPathComponent("transcript.md"), encoding: .utf8
+               ) {
+                pendingSpeakerCount = extractUnnamedSystemSpeakers(in: directory, transcript: transcript)
+            }
             if !keepAudioFiles {
-                // Must run after high-accuracy ASR and summary splice — both read the raw audio.
+                // Must run after high-accuracy ASR, summary splice, and clip extraction —
+                // all read the raw audio.
                 deleteAudioFiles(in: directory)
             }
         }
@@ -266,6 +284,92 @@ actor TranscriptionService {
         activeSessionID = nil
         enrolledMicNames = []
         micPrimaryName = "You"
+        return pendingSpeakerCount
+    }
+
+    /// Cut a short enrollment clip for each unrecognized system-side speaker (`name == nil`)
+    /// that has enough speech and actually appears in the finalized transcript, writing the
+    /// clips to the app-support pending area and a `speakers.json` sidecar to the session
+    /// folder. Returns the number of speakers written. Called from `endSession` while
+    /// `system.wav` and the diarizer timeline are both still available.
+    private func extractUnnamedSystemSpeakers(in directory: URL, transcript: String) -> Int {
+        guard let systemState = sideStates[.system],
+              let diarizer = systemState.diarizer else { return 0 }
+
+        let systemURL = directory.appendingPathComponent("system.wav")
+        guard FileManager.default.fileExists(atPath: systemURL.path),
+              let sampleRate = SpeakerClipExtractor.sampleRate(of: systemURL),
+              sampleRate > 0 else { return 0 }
+
+        // Parse the finalized transcript once and bucket entries by their rendered label.
+        let entriesByLabel = Dictionary(grouping: SpeakerClipExtractor.parseEntries(transcript), by: \.label)
+        let sessionFolder = directory.lastPathComponent
+        var detected: [DetectedSpeaker] = []
+
+        for speaker in diarizer.timeline.speakers.values {
+            // Recognized voices already carry a name; only unknown speakers are offered.
+            guard speaker.name == nil else { continue }
+            guard Double(speaker.speechDuration) >= SpeakerClipExtractor.minSpeechSeconds else { continue }
+            // Use the rendered label string (assignment-order "Person N"), not the index.
+            // Require the label to actually appear in the transcript (lines dropped as echo
+            // never reach disk, so the speaker is genuinely present).
+            guard let label = systemState.speakerLabels[speaker.index],
+                  let labelEntries = entriesByLabel[label], !labelEntries.isEmpty else { continue }
+
+            // Restrict the clip to segments around lines that survived the echo filter, so a
+            // phantom system speaker (the local user's voice echoed onto the system channel)
+            // whose lines were mostly dropped doesn't contribute its echoed audio. Gate on
+            // the *surviving* speech, not the raw diarizer timeline.
+            let allSegments = (speaker.finalizedSegments + speaker.tentativeSegments)
+                .map { Segment(start: Double($0.startTime), end: Double($0.endTime)) }
+            let survivingSegments = SpeakerClipExtractor.segmentsCovering(
+                allSegments, timestamps: labelEntries.map(\.timestamp)
+            )
+            let survivingDuration = survivingSegments.reduce(0) { $0 + $1.duration }
+            guard survivingDuration >= SpeakerClipExtractor.minSpeechSeconds else { continue }
+
+            let frames = SpeakerClipExtractor.clipFrames(forSegments: survivingSegments, sampleRate: sampleRate)
+            guard !frames.isEmpty else { continue }
+
+            let clipFile = SpeakerClipExtractor.clipFileName(forSpeakerIndex: speaker.index)
+            let clipURL = SpeakerClipExtractor.clipURL(sessionFolder: sessionFolder, clipFile: clipFile)
+            do {
+                try SpeakerClipExtractor.writeClip(from: systemURL, frames: frames, to: clipURL)
+            } catch {
+                NSLog("[SerialNotes/Speakers] failed to extract clip for \(label): \(error.localizedDescription)")
+                continue
+            }
+
+            let sampleText = labelEntries.map(\.text).max(by: { $0.count < $1.count }) ?? ""
+            detected.append(DetectedSpeaker(
+                label: label,
+                speakerIndex: speaker.index,
+                totalSpeechSeconds: survivingDuration,
+                sampleRate: sampleRate,
+                segments: survivingSegments,
+                sampleText: SpeakerClipExtractor.truncated(sampleText, to: 140),
+                clipFile: clipFile,
+                state: .pending,
+                resolvedName: nil
+            ))
+        }
+
+        guard !detected.isEmpty else { return 0 }
+        detected.sort { $0.speakerIndex < $1.speakerIndex }
+
+        let sidecar = SpeakerSidecar(
+            version: SpeakerSidecar.currentVersion,
+            sessionStartedAt: sessionStart ?? sessionDate ?? Date(),
+            speakers: detected
+        )
+        do {
+            try SpeakerClipExtractor.writeSidecar(sidecar, inSessionDirectory: directory)
+        } catch {
+            NSLog("[SerialNotes/Speakers] failed to write speakers.json: \(error.localizedDescription)")
+            SpeakerClipExtractor.reapPendingClips(forSessionFolder: sessionFolder)
+            return 0
+        }
+        return detected.count
     }
 
     private func deleteAudioFiles(in directory: URL) {

@@ -7,6 +7,7 @@ struct MenuBarView: View {
     @Environment(SummarySettings.self) private var summarySettings
     @Environment(ModelDownloadState.self) private var modelDownloadState
     @Environment(MeetingDetectionService.self) private var meetingDetectionService
+    @Environment(SettingsNavigation.self) private var navigation
     @Environment(\.openSettings) private var openSettings
 
     private var foundationModelsAvailable: Bool {
@@ -47,6 +48,9 @@ struct MenuBarView: View {
         // otherwise the popover renders as an inactive window and the
         // .glassProminent button washes out to near-white.
         .environment(\.controlActiveState, .active)
+        // Re-capture the known-good `openSettings` action (the gear button uses it) so
+        // the post-meeting banner can open Settings even before the popover is first opened.
+        .onAppear { navigation.openSettingsAction = { openSettings() } }
     }
 
     // MARK: - Idle

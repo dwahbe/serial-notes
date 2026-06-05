@@ -32,6 +32,8 @@ struct SerialNotesApp: App {
     @State private var modelDownloadState: ModelDownloadState
     @State private var meetingDetectionService: MeetingDetectionService
     @State private var voiceProfileStore: VoiceProfileStore
+    @State private var meetingSessionsStore: MeetingSessionsStore
+    @State private var settingsNavigation: SettingsNavigation
 
     init() {
         let recording = RecordingState()
@@ -40,6 +42,8 @@ struct SerialNotesApp: App {
         let meeting = MeetingSettings()
         let identity = IdentitySettings()
         let voices = VoiceProfileStore()
+        let sessionsStore = MeetingSessionsStore(storageSettings: storage, voiceStore: voices)
+        let navigation = SettingsNavigation()
         let detector = MeetingDetectionService(recordingState: recording, meetingSettings: meeting)
         let modelState = ModelDownloadState(transcriptionService: recording.transcriptionService)
 
@@ -48,6 +52,19 @@ struct SerialNotesApp: App {
         recording.storageSettings = storage
         recording.identitySettings = identity
         recording.onRecordingChange = { [weak detector] in detector?.recordingStateChanged() }
+        // After a recording finalizes with unrecognized speakers, offer to name them.
+        recording.onUnnamedSpeakers = { [weak detector, weak navigation, weak sessionsStore] dir, count in
+            sessionsStore?.reload()
+            detector?.showSpeakerNamingPrompt(
+                count: count,
+                onName: {
+                    guard let navigation else { return }
+                    navigation.openMeetings(session: dir)
+                    SerialNotesApp.openSettings(navigation: navigation)
+                },
+                onDismiss: {}
+            )
+        }
         detector.onRecordRequested = { [weak recording, weak storage] in
             guard let recording, let storage else { return }
             Task { await recording.start(storageDirectory: storage.storageLocation) }
@@ -64,6 +81,8 @@ struct SerialNotesApp: App {
         _modelDownloadState = State(initialValue: modelState)
         _meetingDetectionService = State(initialValue: detector)
         _voiceProfileStore = State(initialValue: voices)
+        _meetingSessionsStore = State(initialValue: sessionsStore)
+        _settingsNavigation = State(initialValue: navigation)
 
         appDelegate.recordingState = recording
 
@@ -83,9 +102,12 @@ struct SerialNotesApp: App {
                 .environment(modelDownloadState)
                 .environment(meetingDetectionService)
                 .environment(voiceProfileStore)
+                .environment(settingsNavigation)
                 .preferredColorScheme(.dark)
         } label: {
-            Image(systemName: recordingState.isRecording ? "record.circle" : "waveform.circle")
+            // The label renders at launch, so its `.onAppear` captures the real
+            // `openSettings` action before any post-meeting banner needs it.
+            MenuBarLabel(isRecording: recordingState.isRecording, navigation: settingsNavigation)
         }
         .menuBarExtraStyle(.window)
 
@@ -97,6 +119,43 @@ struct SerialNotesApp: App {
                 .environment(meetingSettings)
                 .environment(identitySettings)
                 .environment(meetingDetectionService)
+                .environment(meetingSessionsStore)
+                .environment(settingsNavigation)
         }
+    }
+
+    /// Bring the Settings window to the front from non-view code (the post-meeting
+    /// prompt). Mirrors `MenuBarView.showSettings` / `StorageSettings.pickFolder`: flip
+    /// to `.regular`, activate, open. `SettingsWindowChrome` restores `.accessory` on close.
+    @MainActor
+    static func openSettings(navigation: SettingsNavigation) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        if let action = navigation.openSettingsAction {
+            // The real SwiftUI `openSettings` action — works reliably in a menu-bar app.
+            action()
+            return
+        }
+        // Fallback: the AppKit selector (macOS 13+ `showSettingsWindow:`, previously
+        // `showPreferencesWindow:`). Restore `.accessory` if neither is handled so we
+        // don't leave the app stuck in the Dock with no window open.
+        let opened = NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            || NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        if !opened {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+}
+
+/// The menu bar icon. Captures the `openSettings` environment action into the shared
+/// navigation so the post-meeting banner (non-view code) can open Settings reliably.
+private struct MenuBarLabel: View {
+    let isRecording: Bool
+    let navigation: SettingsNavigation
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Image(systemName: isRecording ? "record.circle" : "waveform.circle")
+            .onAppear { navigation.openSettingsAction = { openSettings() } }
     }
 }

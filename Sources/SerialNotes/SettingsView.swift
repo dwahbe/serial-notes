@@ -5,13 +5,20 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(VoiceProfileStore.self) private var voiceStore
     @Environment(StorageSettings.self) private var storageSettings
+    @Environment(SettingsNavigation.self) private var navigation
 
     var body: some View {
-        TabView {
+        @Bindable var nav = navigation
+        TabView(selection: $nav.selectedTab) {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gear") }
+                .tag(SettingsNavigation.Tab.general)
             PeopleSettingsTab()
                 .tabItem { Label("People", systemImage: "person.wave.2") }
+                .tag(SettingsNavigation.Tab.people)
+            MeetingsSettingsTab()
+                .tabItem { Label("Meetings", systemImage: "person.2.wave.2") }
+                .tag(SettingsNavigation.Tab.meetings)
         }
         .frame(width: 520, height: 500)
         .background(SettingsWindowChrome())
@@ -119,12 +126,16 @@ private struct PeopleSettingsTab: View {
 
             Section {
                 if voiceStore.otherProfiles.isEmpty {
-                    Text("You haven't named anyone yet. After a meeting, you can name the people Serial Notes detected.")
+                    Text("You haven't named anyone yet. After a call, name the people Serial Notes detected from the Meetings tab — they'll then be recognized by name in future meetings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(voiceStore.otherProfiles) { profile in
-                        OtherProfileRow(profile: profile) { deleteProfile(profile) }
+                        OtherProfileRow(
+                            profile: profile,
+                            onRename: { renameProfile(profile, to: $0) },
+                            onDelete: { deleteProfile(profile) }
+                        )
                     }
                 }
             } header: {
@@ -259,25 +270,175 @@ private struct PeopleSettingsTab: View {
             errorMessage = error.localizedDescription
         }
     }
+
+    @discardableResult
+    private func renameProfile(_ profile: VoiceProfile, to newName: String) -> Bool {
+        do {
+            try voiceStore.rename(profile, to: newName)
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
 }
 
 // MARK: - Row
 
 private struct OtherProfileRow: View {
     let profile: VoiceProfile
+    /// Returns whether the rename was accepted (false ⇒ rejected, e.g. duplicate name).
+    let onRename: (String) -> Bool
     let onDelete: () -> Void
 
+    /// Display the name as plain text by default; the pencil flips it into an
+    /// inline field so a typo from the post-meeting naming flow is easy to fix.
+    @State private var isEditing = false
+    @State private var draft: String = ""
+    @FocusState private var focused: Bool
+
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: "person.circle")
                 .foregroundStyle(.secondary)
-            Text(profile.name)
-            Spacer()
+
+            if isEditing {
+                // `.labelsHidden()` stops the Form from drawing the field's own
+                // title as a redundant leading label next to the value.
+                TextField("Name", text: $draft)
+                    .labelsHidden()
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onSubmit { focused = false }
+                Spacer()
+            } else {
+                // Double-click the name to rename, mirroring the pencil button.
+                Text(profile.name)
+                    .onTapGesture(count: 2) { beginEditing() }
+                Spacer()
+                Button { beginEditing() } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Rename")
+            }
+
             Button(role: .destructive) { onDelete() } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
         }
+        // Commit on focus loss (Return blurs the field, clicking away too) — a
+        // single commit path, so no double-fire to guard against.
+        .onChange(of: focused) { wasFocused, isFocused in
+            if wasFocused, !isFocused { commit() }
+        }
+    }
+
+    private func beginEditing() {
+        draft = profile.name
+        isEditing = true
+        focused = true
+    }
+
+    private func commit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        isEditing = false
+        // Skip empty / no-op edits; on rejection (e.g. duplicate name) the
+        // profile keeps its current name, so there's nothing to revert.
+        guard !trimmed.isEmpty, trimmed != profile.name else { return }
+        _ = onRename(trimmed)
+    }
+}
+
+// MARK: - Meetings Tab
+
+private struct MeetingsSettingsTab: View {
+    @Environment(MeetingSessionsStore.self) private var sessionsStore
+    @Environment(SettingsNavigation.self) private var navigation
+    @State private var sheetSession: MeetingSession?
+
+    var body: some View {
+        Form {
+            Section {
+                if sessionsStore.sessions.isEmpty {
+                    Text("No meetings with speakers to name yet. After a call with people Serial Notes doesn't recognize, they'll show up here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(sessionsStore.sessions) { session in
+                        MeetingRow(session: session) { sheetSession = session }
+                    }
+                }
+            } header: {
+                Text("Recent Meetings")
+            } footer: {
+                Text("Name the speakers Serial Notes detected, and they'll be recognized in future meetings. Voice clips stay on your Mac and are removed once you name or skip each person.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .sheet(item: $sheetSession) { session in
+            // Mutations refresh the store in place, so no full rescan is needed on close.
+            SpeakerNamingView(sessionURL: session.directory, store: sessionsStore) {
+                sheetSession = nil
+            }
+        }
+        .onAppear {
+            sessionsStore.reload()
+            consumeDeepLink()
+        }
+        .onChange(of: navigation.pendingNamingSession) { _, _ in consumeDeepLink() }
+    }
+
+    /// Honor a deep link from the post-meeting prompt: open the naming sheet for the
+    /// exact session it carried, then clear the request.
+    private func consumeDeepLink() {
+        guard let url = navigation.pendingNamingSession else { return }
+        navigation.pendingNamingSession = nil
+        if let session = sessionsStore.session(at: url) {
+            sheetSession = session
+        }
+    }
+}
+
+private struct MeetingRow: View {
+    let session: MeetingSession
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.2.wave.2.fill")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    if session.pendingCount > 0 {
+                        Text("^[\(session.pendingCount) person](inflect: true) to name")
+                            .font(.body)
+                            .foregroundStyle(.tint)
+                    } else {
+                        Text("All named")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(session.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if session.pendingCount > 0 {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(session.pendingCount == 0)
     }
 }
 

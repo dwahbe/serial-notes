@@ -192,14 +192,32 @@ enum TranscriptFormatter {
     }
 
     private static func timestampFromEntryHeader(_ line: String) -> TimeInterval? {
-        guard line.hasPrefix("**"),
-              let open = line.range(of: " ("),
-              let close = line.range(of: "):", range: open.upperBound..<line.endIndex) else {
+        parseEntryHeader(line)?.timestamp
+    }
+
+    /// Single source of truth for the transcript entry-header grammar
+    /// `**Label** (HH:MM:SS): body`. Returns the speaker label, the timestamp, and the
+    /// inline body (empty for block-form headers whose body lives on the following
+    /// lines). Returns nil for any line that is not a speaker-entry header — summary
+    /// prose, action-item owners (`- [ ] **x** — …`), headings, blank lines. The hour
+    /// field may exceed two digits (it is parsed up to the first `):`).
+    static func parseEntryHeader(_ line: some StringProtocol) -> (label: String, timestamp: TimeInterval, inlineBody: String)? {
+        guard line.hasPrefix("**") else { return nil }
+        let afterOpen = line.dropFirst(2)
+        guard let boldClose = afterOpen.range(of: "** (") else { return nil }
+        let label = String(afterOpen[afterOpen.startIndex..<boldClose.lowerBound])
+        guard !label.isEmpty else { return nil }
+
+        let afterParen = afterOpen[boldClose.upperBound...] // "HH:MM:SS): body" or "HH:MM:SS):"
+        guard let close = afterParen.range(of: "):") else { return nil }
+        let raw = afterParen[afterParen.startIndex..<close.lowerBound] // "HH:MM:SS"
+        let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let hours = Int(parts[0]), let minutes = Int(parts[1]), let seconds = Int(parts[2]) else {
             return nil
         }
-        let raw = String(line[open.upperBound..<close.lowerBound])
-        let parts = raw.split(separator: ":").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return TimeInterval(parts[0] * 3600 + parts[1] * 60 + parts[2])
+        let timestamp = TimeInterval(hours * 3600 + minutes * 60 + seconds)
+        let body = afterParen[close.upperBound...].drop(while: { $0 == " " })
+        return (label, timestamp, String(body))
     }
 }

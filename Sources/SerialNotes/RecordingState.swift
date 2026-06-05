@@ -7,6 +7,10 @@ final class RecordingState {
     var errorMessage: String?
 
     @ObservationIgnored var onRecordingChange: (@MainActor () -> Void)?
+    /// Fired after a recording finalizes when it detected ≥1 unrecognized system
+    /// speaker, so the app can offer to name them. Carries the session directory and
+    /// the pending-speaker count. Suppressed on `.appQuit`.
+    @ObservationIgnored var onUnnamedSpeakers: (@MainActor (URL, Int) -> Void)?
     @ObservationIgnored weak var voiceProfileStore: VoiceProfileStore?
     @ObservationIgnored weak var summarySettings: SummarySettings?
     @ObservationIgnored weak var storageSettings: StorageSettings?
@@ -164,15 +168,28 @@ final class RecordingState {
     private func finishStop(_ context: StopContext) async {
         await stopCapture()
         let stats = captureService.currentStats()
-        await transcriptionService.endSession(
+        let pendingSpeakers = await transcriptionService.endSession(
             summarySettings: context.summarySettings,
             keepAudioFiles: context.keepAudioFiles,
-            summaryCutoff: context.summaryCutoff
+            summaryCutoff: context.summaryCutoff,
+            // On app quit the prompt is suppressed anyway — skip clip extraction so
+            // termination isn't delayed by writing WAVs the user won't see.
+            extractSpeakers: !context.stopReason.isAppQuit
         )
         finalizeSession(
             context: context,
             stats: stats
         )
+        notifyUnnamedSpeakersIfNeeded(context: context, count: pendingSpeakers)
+    }
+
+    private func notifyUnnamedSpeakersIfNeeded(context: StopContext, count: Int) {
+        guard count > 0, let sessionDir = context.sessionDir else { return }
+        // App quit tears the UI down — don't try to surface a naming prompt then.
+        // The speakers.json sidecar still persists, so the user can name them later
+        // from Settings → Meetings.
+        if case .appQuit = context.stopReason { return }
+        onUnnamedSpeakers?(sessionDir, count)
     }
 
     private func finalizeSession(

@@ -100,10 +100,38 @@ final class VoiceProfileStore {
         return profile
     }
 
+    /// Save an `.other` profile, replacing any existing `.other` profile that already
+    /// carries the same (case-insensitive) name. Keeps the post-meeting naming flow from
+    /// minting duplicate "Bob" profiles and makes a retried name-save idempotent.
+    @discardableResult
+    func upsertOther(name: String, clipURL: URL) throws -> VoiceProfile {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        let existing = normalized.isEmpty ? nil
+            : profiles.first(where: { $0.kind == .other && $0.name.lowercased() == normalized })
+
+        // Save the new profile first, then remove the prior same-name one — so a failure
+        // mid-operation never leaves the user with neither profile (vs. delete-then-save).
+        let saved = try save(name: trimmed, kind: .other, clipURL: clipURL)
+        if let existing, existing.id != saved.id {
+            try? delete(existing)
+        }
+        return saved
+    }
+
     func rename(_ profile: VoiceProfile, to newName: String) throws {
         var updated = profile
         updated.name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         if updated.name.isEmpty { updated.name = fallbackName(for: updated.kind) }
+
+        // Don't let two profiles of the same kind share a name — keep this consistent
+        // with upsertOther's dedup so the post-meeting flow and a manual rename agree.
+        if profiles.contains(where: {
+            $0.id != updated.id && $0.kind == updated.kind
+                && $0.name.lowercased() == updated.name.lowercased()
+        }) {
+            throw VoiceProfileError.duplicateName(updated.name)
+        }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -175,6 +203,17 @@ final class VoiceProfileStore {
         switch kind {
         case .you: return "You"
         case .other: return "Unnamed"
+        }
+    }
+}
+
+enum VoiceProfileError: LocalizedError {
+    case duplicateName(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateName(let name):
+            return "A profile named “\(name)” already exists."
         }
     }
 }

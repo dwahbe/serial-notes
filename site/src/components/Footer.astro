@@ -7,8 +7,14 @@ import { SITE } from "../consts";
   <div class="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-8">
     <div class="flex flex-col gap-2">
       <Logo />
+      <p class="inline-flex items-center gap-1.5 text-[13px] text-faint">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="text-red-500">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path>
+        </svg>
+        Made with love in London
+      </p>
       <p class="text-[13px] text-faint">
-        Built by <a href={SITE.authors[0].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[0].name}</a> and <a href={SITE.authors[1].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[1].name}</a>
+        Built by <a href={SITE.authors[0].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[0].name}</a>, with help from <a href={SITE.authors[1].url} target="_blank" rel="noopener noreferrer" class="text-muted underline decoration-line underline-offset-2 transition-colors hover:text-ink">{SITE.authors[1].name}</a>
       </p>
     </div>
 

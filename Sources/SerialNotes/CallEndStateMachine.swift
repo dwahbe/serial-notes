@@ -5,15 +5,14 @@ struct CallEndStateMachine: Sendable {
         case idle
         case monitoring
         case inactiveGrace(inactiveAt: Date)
-        case prompting(inactiveAt: Date, remainingSeconds: Int)
+        case prompting(inactiveAt: Date)
         case suppressed
     }
 
     enum Effect: Equatable, Sendable {
         case startGraceTimer(inactiveAt: Date)
         case cancelEndTimers
-        case startCountdown(inactiveAt: Date, remainingSeconds: Int)
-        case updateCountdown(remainingSeconds: Int)
+        case startCountdown
         case hidePrompt
         case stop(RecordingStopReason)
         case stopMonitoring
@@ -27,7 +26,13 @@ struct CallEndStateMachine: Sendable {
     let inactiveGraceSeconds: TimeInterval
     let countdownSeconds: Int
 
-    init(inactiveGraceSeconds: TimeInterval = 10, countdownSeconds: Int = 20) {
+    // Grace is a short debounce so a brief mid-call audio blip (mute toggle,
+    // screen-share transition, network hiccup) doesn't false-fire the end prompt;
+    // it's deliberately small so the prompt appears almost as soon as the call
+    // ends. Countdown is the window the user has to "Keep Recording" before
+    // auto-stop. Kept short now that grace is short — a false trigger would
+    // otherwise stop a live recording too aggressively.
+    init(inactiveGraceSeconds: TimeInterval = 2, countdownSeconds: Int = 5) {
         self.inactiveGraceSeconds = inactiveGraceSeconds
         self.countdownSeconds = countdownSeconds
     }
@@ -93,19 +98,13 @@ struct CallEndStateMachine: Sendable {
               currentInactiveAt == inactiveAt else {
             return []
         }
-        phase = .prompting(inactiveAt: inactiveAt, remainingSeconds: countdownSeconds)
-        return [.startCountdown(inactiveAt: inactiveAt, remainingSeconds: countdownSeconds)]
-    }
-
-    mutating func countdownTick(remainingSeconds: Int) -> [Effect] {
-        guard case .prompting(let inactiveAt, _) = phase else { return [] }
-        phase = .prompting(inactiveAt: inactiveAt, remainingSeconds: remainingSeconds)
-        return [.updateCountdown(remainingSeconds: remainingSeconds)]
+        phase = .prompting(inactiveAt: inactiveAt)
+        return [.startCountdown]
     }
 
     mutating func countdownFinished() -> [Effect] {
         guard let association,
-              case .prompting(let inactiveAt, _) = phase else {
+              case .prompting(let inactiveAt) = phase else {
             return []
         }
         phase = .suppressed
@@ -115,18 +114,6 @@ struct CallEndStateMachine: Sendable {
             inactiveAt: inactiveAt
         )
         return [.hidePrompt, .stop(.callEndedAuto(context))]
-    }
-
-    mutating func stopNow() -> [Effect] {
-        guard let association else { return [] }
-        let inactiveAt = firstInactiveAt ?? Date()
-        phase = .suppressed
-        let context = MeetingCallEndContext(
-            appName: association.appName,
-            bundleIdentifier: association.bundleIdentifier,
-            inactiveAt: inactiveAt
-        )
-        return [.hidePrompt, .stop(.callEndedUserConfirmed(context))]
     }
 
     mutating func keepRecording() -> [Effect] {

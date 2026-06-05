@@ -8,7 +8,17 @@ final class MeetingAudioActivityMonitor {
     private var association: MeetingRecordingAssociation?
     private var matcher: MeetingAudioProcessMatcher?
     private var hasObservedActive = false
+    private var pollTask: Task<Void, Never>?
     private let cleanup = MeetingAudioActivityMonitorCleanup()
+
+    /// How often the safety-net poll re-reads process state. CoreAudio
+    /// per-process `IsRunningInput/Output` change notifications are unreliable for
+    /// some meeting apps (notably Zoom): the "became active" or "became inactive"
+    /// callback is sometimes never delivered, which would otherwise leave the
+    /// call-end machine stuck in `monitoring` forever. Polling re-derives the
+    /// truth so a dropped notification can't wedge auto-stop. 3s is well inside
+    /// the 10s inactive grace, so a missed transition still surfaces promptly.
+    private let pollInterval: Duration = .seconds(3)
 
     func startMonitoring(association: MeetingRecordingAssociation) {
         stopMonitoring()
@@ -16,13 +26,33 @@ final class MeetingAudioActivityMonitor {
         self.matcher = MeetingAudioProcessMatcher(association: association)
         registerProcessListListener()
         refreshProcessListenersAndNotify()
+        startPolling()
     }
 
     func stopMonitoring() {
+        pollTask?.cancel()
+        pollTask = nil
         cleanup.removeAll()
         association = nil
         matcher = nil
         hasObservedActive = false
+    }
+
+    /// Safety net for dropped CoreAudio process-property notifications: re-scan the
+    /// process list on a timer and re-notify. Re-uses `refreshProcessListenersAndNotify`
+    /// so a process that only *became* active after monitoring started still gets
+    /// tracked, and a process that went inactive without firing its listener is
+    /// still observed. The call-end state machine treats repeated active/inactive
+    /// states idempotently, so redundant ticks are harmless.
+    private func startPolling() {
+        pollTask?.cancel()
+        pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: self?.pollInterval ?? .seconds(3))
+                guard !Task.isCancelled, let self, self.matcher != nil else { return }
+                self.refreshProcessListenersAndNotify()
+            }
+        }
     }
 
     private func registerProcessListListener() {

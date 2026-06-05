@@ -51,7 +51,6 @@ struct MeetingSessionDiagnostics: Codable, Sendable {
     var firstInactiveAt: Date?
     var promptShownAt: Date?
     var autoStopFiredAt: Date?
-    var userConfirmedStopAt: Date?
     var keptRecordingAt: Date?
     var neverObservedActiveWarningAt: Date?
     var lastUnknownReason: String?

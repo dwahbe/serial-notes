@@ -5,7 +5,6 @@ import SwiftUI
 final class MeetingBannerController {
     var onRecord: (@MainActor () -> Void)?
     var onDismiss: (@MainActor () -> Void)?
-    var onEndStop: (@MainActor () -> Void)?
     var onEndKeepRecording: (@MainActor () -> Void)?
 
     private let panel: NSPanel
@@ -70,22 +69,42 @@ final class MeetingBannerController {
         show(view: view, autoDismiss: true, prompt: .start)
     }
 
-    func showEndPrompt(appName: String, remainingSeconds: Int) {
+    /// Post-meeting prompt offering to name the unrecognized speakers a recording
+    /// detected. Independent of the start/end prompts and the call-end state machine —
+    /// the caller supplies the actions (open Settings → Meetings / dismiss). Auto-dismisses
+    /// like the start prompt since it isn't time-sensitive (the session stays nameable
+    /// from Settings).
+    func showSpeakerNamingPrompt(
+        count: Int,
+        onName: @escaping @MainActor () -> Void,
+        onDismiss: @escaping @MainActor () -> Void
+    ) {
+        endPromptModel = nil
+        let view = MeetingNamingBannerView(
+            count: count,
+            onName: { [weak self] in
+                self?.hide()
+                onName()
+            },
+            onDismiss: { [weak self] in
+                self?.hide()
+                onDismiss()
+            }
+        )
+        show(view: view, autoDismiss: true, prompt: .naming)
+    }
+
+    func showEndPrompt(appName: String) {
         if visiblePrompt == .end, let endPromptModel {
             endPromptModel.appName = appName
-            endPromptModel.remainingSeconds = remainingSeconds
             repositionIfVisible()
             return
         }
 
-        let model = MeetingEndPromptModel(appName: appName, remainingSeconds: remainingSeconds)
+        let model = MeetingEndPromptModel(appName: appName)
         endPromptModel = model
         let view = MeetingEndBannerView(
             model: model,
-            onStop: { [weak self] in
-                self?.hide()
-                self?.onEndStop?()
-            },
             onKeepRecording: { [weak self] in
                 self?.hide()
                 self?.onEndKeepRecording?()
@@ -181,16 +200,15 @@ final class MeetingBannerController {
 private enum VisiblePrompt {
     case start
     case end
+    case naming
 }
 
 @Observable
 private final class MeetingEndPromptModel {
     var appName: String
-    var remainingSeconds: Int
 
-    init(appName: String, remainingSeconds: Int) {
+    init(appName: String) {
         self.appName = appName
-        self.remainingSeconds = remainingSeconds
     }
 }
 
@@ -198,8 +216,6 @@ private struct MeetingStartBannerView: View {
     let appName: String
     let onRecord: @MainActor () -> Void
     let onDismiss: @MainActor () -> Void
-
-    @State private var isHovering = false
 
     var body: some View {
         BannerPill(
@@ -223,11 +239,66 @@ private struct MeetingStartBannerView: View {
             .padding(.trailing, 8)
             .padding(.vertical, 6)
         }
+        .dismissableBannerChrome(onDismiss: onDismiss)
+    }
+}
+
+private struct MeetingNamingBannerView: View {
+    let count: Int
+    let onName: @MainActor () -> Void
+    let onDismiss: @MainActor () -> Void
+
+    private var subtitle: String {
+        count == 1 ? "1 person to name" : "\(count) people to name"
+    }
+
+    var body: some View {
+        BannerPill(
+            iconName: "person.2.wave.2.fill",
+            iconColor: .black,
+            title: "New voices in this meeting",
+            subtitle: subtitle,
+            backgroundColor: .white,
+            strokeColor: .black.opacity(0.08)
+        ) {
+            Button(action: onName) {
+                Text("Name…")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color.black))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 8)
+            .padding(.vertical, 6)
+        }
+        .dismissableBannerChrome(onDismiss: onDismiss)
+    }
+}
+
+/// The hover-reveal dismiss button + outer frame/padding shared by the start and naming
+/// banners (the end-call banner has its own buttons and doesn't use this).
+private struct DismissableBannerChrome: ViewModifier {
+    let onDismiss: @MainActor () -> Void
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
             .overlay(alignment: .topLeading) {
-                dismissButton
-                    .opacity(isHovering ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.12), value: isHovering)
-                    .allowsHitTesting(isHovering)
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18, weight: .medium))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.75))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+                .offset(x: -6, y: -6)
+                .opacity(isHovering ? 1 : 0)
+                .animation(.easeInOut(duration: 0.12), value: isHovering)
+                .allowsHitTesting(isHovering)
             }
             .padding(.top, 8)
             .padding(.leading, 8)
@@ -235,53 +306,41 @@ private struct MeetingStartBannerView: View {
             .preferredColorScheme(.light)
             .onHover { isHovering = $0 }
     }
+}
 
-    private var dismissButton: some View {
-        Button(action: onDismiss) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 18, weight: .medium))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .black.opacity(0.75))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Dismiss")
-        .offset(x: -6, y: -6)
+private extension View {
+    func dismissableBannerChrome(onDismiss: @escaping @MainActor () -> Void) -> some View {
+        modifier(DismissableBannerChrome(onDismiss: onDismiss))
     }
 }
 
 private struct MeetingEndBannerView: View {
     @Bindable var model: MeetingEndPromptModel
-    let onStop: @MainActor () -> Void
     let onKeepRecording: @MainActor () -> Void
+
+    // A calm green: the call ended normally and the recording is being saved —
+    // nothing failed, so deliberately not red. The countdown is intentionally
+    // hidden; the recording still auto-stops, but the user just sees a simple
+    // "wrapping up" notice with one escape hatch.
+    private static let accent = Color(red: 0.20, green: 0.56, blue: 0.30)
 
     var body: some View {
         BannerPill(
-            iconName: "stop.circle.fill",
-            iconColor: Color(red: 0.78, green: 0.08, blue: 0.08),
+            iconName: "checkmark.circle.fill",
+            iconColor: Self.accent,
             title: "\(model.appName) call ended",
-            subtitle: "Stopping in \(model.remainingSeconds)s",
-            backgroundColor: Color(red: 1.0, green: 0.965, blue: 0.955),
-            strokeColor: Color(red: 0.78, green: 0.08, blue: 0.08).opacity(0.22),
+            subtitle: "Wrapping up recording",
+            backgroundColor: .white,
+            strokeColor: .black.opacity(0.08),
             spacerMinLength: 8
         ) {
             Button(action: onKeepRecording) {
                 Text("Keep Recording")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.black.opacity(0.76))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-            }
-            .buttonStyle(.plain)
-
-            Button(action: onStop) {
-                Label("Stop Now", systemImage: "stop.fill")
-                    .font(.caption.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color(red: 0.78, green: 0.08, blue: 0.08)))
+                    .background(Capsule().fill(Color.black))
             }
             .buttonStyle(.plain)
             .padding(.trailing, 8)

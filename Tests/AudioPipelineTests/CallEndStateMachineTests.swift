@@ -58,7 +58,7 @@ struct CallEndStateMachineTests {
 
         let effects = machine.graceTimerFired(inactiveAt: inactiveAt)
 
-        #expect(effects == [.startCountdown(inactiveAt: inactiveAt, remainingSeconds: 20)])
+        #expect(effects == [.startCountdown])
     }
 
     @Test("Countdown completion auto stops with inactive cutoff")

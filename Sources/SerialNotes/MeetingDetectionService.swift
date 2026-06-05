@@ -152,9 +152,6 @@ final class MeetingDetectionService {
         banner.onDismiss = { [weak self] in
             self?.dismissCurrent()
         }
-        banner.onEndStop = { [weak self] in
-            self?.stopFromEndPrompt()
-        }
         banner.onEndKeepRecording = { [weak self] in
             self?.keepRecordingFromEndPrompt()
         }
@@ -186,6 +183,18 @@ final class MeetingDetectionService {
         // not a re-guess of the one the user just dismissed.
         userRejectedThisWindow = true
         reevaluate()
+    }
+
+    /// Surface the post-meeting "name these speakers" banner. A thin pass-through to
+    /// the banner the service already owns — intentionally independent of the call-end
+    /// state machine (this has no detection or stop semantics; it fires after a
+    /// recording has already finalized).
+    func showSpeakerNamingPrompt(
+        count: Int,
+        onName: @escaping @MainActor () -> Void,
+        onDismiss: @escaping @MainActor () -> Void
+    ) {
+        banner.showSpeakerNamingPrompt(count: count, onName: onName, onDismiss: onDismiss)
     }
 
     /// Pause detection — used while voice enrollment holds the mic so we don't
@@ -288,13 +297,9 @@ final class MeetingDetectionService {
                 callEndGraceTask = nil
                 callEndCountdownTask?.cancel()
                 callEndCountdownTask = nil
-            case .startCountdown(let inactiveAt, let remainingSeconds):
+            case .startCountdown:
                 markCallEndPromptShown(at: Date())
-                startCallEndCountdown(inactiveAt: inactiveAt, remainingSeconds: remainingSeconds)
-            case .updateCountdown(let remainingSeconds):
-                if let association = callEndState.association {
-                    banner.showEndPrompt(appName: association.appName, remainingSeconds: remainingSeconds)
-                }
+                startCallEndCountdown()
             case .hidePrompt:
                 banner.hide()
             case .stop(let reason):
@@ -302,8 +307,6 @@ final class MeetingDetectionService {
                 switch reason {
                 case .callEndedAuto:
                     markAutoStopFired(at: Date())
-                case .callEndedUserConfirmed:
-                    markUserConfirmedCallEndStop(at: Date())
                 case .manual, .appQuit:
                     break
                 }
@@ -320,8 +323,11 @@ final class MeetingDetectionService {
 
     private func scheduleCallEndGraceTimer(inactiveAt: Date) {
         callEndGraceTask?.cancel()
+        // Read the grace duration from the state machine so the timer and the
+        // reducer can't drift (the reducer owns the canonical value).
+        let graceSeconds = callEndState.inactiveGraceSeconds
         callEndGraceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(10))
+            try? await Task.sleep(for: .seconds(graceSeconds))
             guard !Task.isCancelled else { return }
             self?.handleCallEndEffects(
                 self?.callEndState.graceTimerFired(inactiveAt: inactiveAt) ?? []
@@ -329,22 +335,17 @@ final class MeetingDetectionService {
         }
     }
 
-    private func startCallEndCountdown(inactiveAt: Date, remainingSeconds: Int) {
+    private func startCallEndCountdown() {
         guard let association = callEndState.association else { return }
         callEndCountdownTask?.cancel()
-        banner.showEndPrompt(appName: association.appName, remainingSeconds: remainingSeconds)
+        banner.showEndPrompt(appName: association.appName)
+        // The banner no longer shows a ticking countdown, so this is a single
+        // sleep for the auto-stop window rather than a per-second loop. Cancelled
+        // by `.cancelEndTimers` (activity resumed / Keep Recording) and on stop.
+        let countdownSeconds = callEndState.countdownSeconds
         callEndCountdownTask = Task { @MainActor [weak self] in
-            var remaining = remainingSeconds
-            while remaining > 0 {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                remaining -= 1
-                if remaining > 0 {
-                    self?.handleCallEndEffects(
-                        self?.callEndState.countdownTick(remainingSeconds: remaining) ?? []
-                    )
-                }
-            }
+            try? await Task.sleep(for: .seconds(countdownSeconds))
+            guard !Task.isCancelled else { return }
             self?.handleCallEndEffects(self?.callEndState.countdownFinished() ?? [])
         }
     }
@@ -358,10 +359,6 @@ final class MeetingDetectionService {
                 self?.callEndState.neverObservedTimerFired(at: Date()) ?? []
             )
         }
-    }
-
-    private func stopFromEndPrompt() {
-        handleCallEndEffects(callEndState.stopNow())
     }
 
     private func keepRecordingFromEndPrompt() {
@@ -394,10 +391,6 @@ final class MeetingDetectionService {
 
     private func markAutoStopFired(at date: Date) {
         meetingDiagnostics.autoStopFiredAt = date
-    }
-
-    private func markUserConfirmedCallEndStop(at date: Date) {
-        meetingDiagnostics.userConfirmedStopAt = date
     }
 
     private func markKeptRecordingAfterCallEnd(at date: Date) {
@@ -612,16 +605,6 @@ final class MeetingDetectionService {
             }
         }
         return owners
-    }
-
-    /// The single known meeting app that actually holds the mic — the
-    /// authoritative attribution signal. `nil` when none can be determined
-    /// (per-process API unavailable, owner isn't a known/running app, or the input
-    /// flag hasn't propagated yet), in which case callers fall back to focus-order
-    /// heuristics. Multiple simultaneous capturers (a Slack huddle *and* a Zoom
-    /// call) are disambiguated deterministically.
-    private func availableInputOwner() -> String? {
-        disambiguate(among: availableInputOwners())
     }
 
     /// Maps a canonical bundle ID to the installed variant that is actually

@@ -5,12 +5,14 @@
 // rather than a dedicated Markdown mark. Per-icon heights optically balance the
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
+// `h` is the mobile height; `hLg` scales each mark up ~1.4x on desktop (sm and
+// above), where the strip has more room to breathe.
 const apps = [
-  { name: "Notion", file: "notion", h: 27 },
-  { name: "Apple Notes", file: "apple-notes", h: 30 },
-  { name: "Obsidian", file: "obsidian", h: 32 },
-  { name: "Bear", file: "bear", h: 31 },
-  { name: "Logseq", file: "logseq", h: 30 },
+  { name: "Notion", file: "notion", h: 27, hLg: 38 },
+  { name: "Apple Notes", file: "apple-notes", h: 30, hLg: 42 },
+  { name: "Obsidian", file: "obsidian", h: 32, hLg: 45 },
+  { name: "Bear", file: "bear", h: 31, hLg: 43 },
+  { name: "Logseq", file: "logseq", h: 30, hLg: 42 },
 ];
 ---
 
@@ -22,15 +24,15 @@ const apps = [
 
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
       {
-        apps.map(({ name, file, h }) => (
+        apps.map(({ name, file, h, hLg }) => (
           <div class="group flex items-center gap-2.5">
             <img
               src={`/logos/${file}.svg`}
               alt=""
               aria-hidden="true"
               decoding="async"
-              style={`height:${h}px`}
-              class="w-auto"
+              style={`--h:${h}px;--h-lg:${hLg}px`}
+              class="logo-mark w-auto"
             />
             <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
               {name}
@@ -43,3 +45,15 @@ const apps = [
     </div>
   </div>
 </section>
+
+<style>
+  .logo-mark {
+    height: var(--h);
+  }
+  /* Tailwind's `sm` breakpoint — match the section's existing scale-up point. */
+  @media (min-width: 640px) {
+    .logo-mark {
+      height: var(--h-lg);
+    }
+  }
+</style>

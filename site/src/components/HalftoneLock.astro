@@ -1,0 +1,108 @@
+---
+// Procedurally-generated halftone padlock — a grid of white dots whose radius
+// tracks a signed-distance field of a padlock (body + shackle, with the
+// keyhole carved out). Built at compile time from pure geometry (no raster
+// source), so it stays crisp at any size. Dots are largest deep inside the
+// lock and shrink to nothing across the soft edges, giving the classic
+// halftone fade. The viewBox is fitted to the generated dots so there's no
+// stray whitespace around the shape.
+
+interface Props {
+  class?: string;
+}
+const { class: className } = Astro.props;
+
+// Sampling grid + dot sizing. `step` controls halftone resolution; `edge` is
+// the soft falloff width (in the same units) that feathers the silhouette.
+const W = 320;
+const H = 360;
+const step = 7;
+const maxR = step * 0.46;
+const edge = step * 0.95;
+
+const cx = 160;
+// Body — a rounded square.
+const bodyCx = 160, bodyCy = 252, bodyHW = 76, bodyHH = 76, bodyR = 26;
+// Shackle — an inverted "U": an arc centered at (cx, scy) with two legs that
+// drop into the top of the body.
+const scy = 150, Rmid = 48, shackleHalf = 13, legBottom = 186;
+// Keyhole — a circle with a tapering slot below, carved out of the body.
+const keyCx = 160, keyCy = 232, keyR = 11, slotBottom = 272, slotHalf = 6;
+
+// Signed distance to a rounded rectangle (negative inside).
+function sdRoundRect(px: number, py: number, rx: number, ry: number, hw: number, hh: number, r: number) {
+  const qx = Math.abs(px - rx) - (hw - r);
+  const qy = Math.abs(py - ry) - (hh - r);
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+}
+// Distance from a point to a line segment.
+function distSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const dx = bx - ax, dy = by - ay;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+// Signed distance to the shackle: the upper semicircle is an arc ring; below
+// the arc center the two straight legs take over (they meet the arc ends, so
+// the centerline is continuous).
+function sdShackle(px: number, py: number) {
+  const d = py <= scy
+    ? Math.abs(Math.hypot(px - cx, py - scy) - Rmid)
+    : Math.min(
+        distSeg(px, py, cx - Rmid, scy, cx - Rmid, legBottom),
+        distSeg(px, py, cx + Rmid, scy, cx + Rmid, legBottom),
+      );
+  return d - shackleHalf;
+}
+// Map a signed distance to dot coverage in [0,1] across the soft edge.
+function cov(sd: number) {
+  return Math.max(0, Math.min(1, 0.5 - sd / (2 * edge)));
+}
+
+type Dot = { x: number; y: number; r: number };
+const dots: Dot[] = [];
+for (let gy = step / 2; gy < H; gy += step) {
+  for (let gx = step / 2; gx < W; gx += step) {
+    const lock = Math.min(
+      sdRoundRect(gx, gy, bodyCx, bodyCy, bodyHW, bodyHH, bodyR),
+      sdShackle(gx, gy),
+    );
+    let c = cov(lock);
+    if (c <= 0) continue;
+    // Carve the keyhole (circle ∪ slot) back out of the coverage.
+    const keyhole = Math.min(
+      Math.hypot(gx - keyCx, gy - keyCy) - keyR,
+      distSeg(gx, gy, keyCx, keyCy, keyCx, slotBottom) - slotHalf,
+    );
+    c *= 1 - cov(keyhole);
+    const r = maxR * Math.pow(c, 0.85);
+    if (r < 0.4) continue;
+    dots.push({ x: gx, y: gy, r: Math.round(r * 100) / 100 });
+  }
+}
+
+// Fit the viewBox tightly to the dots so the SVG has no stray margins.
+const pad = step;
+const xs = dots.map((d) => d.x);
+const ys = dots.map((d) => d.y);
+const minX = Math.min(...xs) - pad;
+const minY = Math.min(...ys) - pad;
+const vbW = Math.max(...xs) + pad - minX;
+const vbH = Math.max(...ys) + pad - minY;
+---
+
+<svg
+  data-halftone-lock
+  viewBox={`${minX} ${minY} ${vbW} ${vbH}`}
+  fill="#fff"
+  aria-hidden="true"
+  class:list={["block", className]}
+>
+  {dots.map((d) => <circle cx={d.x} cy={d.y} r={d.r} />)}
+</svg>
+
+<script>
+  import { initDotHover } from "../scripts/dotHover";
+  for (const svg of document.querySelectorAll<SVGSVGElement>("[data-halftone-lock]")) {
+    initDotHover(svg);
+  }
+</script>

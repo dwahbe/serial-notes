@@ -55,18 +55,24 @@ final class MeetingBannerController {
 
     func showStartPrompt(appName: String) {
         endPromptModel = nil
+        // The same action backs the explicit Dismiss button and the timed
+        // auto-dismiss, so ignoring the prompt for the timeout is treated exactly
+        // like dismissing it — `onDismiss` (→ MeetingDetectionService.dismissCurrent)
+        // releases the detector's lock and clears the popover offer, rather than
+        // leaving a stale "detected" state wedged until the call ends.
+        let dismiss: @MainActor () -> Void = { [weak self] in
+            self?.hide()
+            self?.onDismiss?()
+        }
         let view = MeetingStartBannerView(
             appName: appName,
             onRecord: { [weak self] in
                 self?.hide()
                 self?.onRecord?()
             },
-            onDismiss: { [weak self] in
-                self?.hide()
-                self?.onDismiss?()
-            }
+            onDismiss: dismiss
         )
-        show(view: view, autoDismiss: true, prompt: .start)
+        show(view: view, prompt: .start, autoDismiss: dismiss)
     }
 
     /// Post-meeting prompt offering to name the unrecognized speakers a recording
@@ -80,18 +86,19 @@ final class MeetingBannerController {
         onDismiss: @escaping @MainActor () -> Void
     ) {
         endPromptModel = nil
+        let dismiss: @MainActor () -> Void = { [weak self] in
+            self?.hide()
+            onDismiss()
+        }
         let view = MeetingNamingBannerView(
             count: count,
             onName: { [weak self] in
                 self?.hide()
                 onName()
             },
-            onDismiss: { [weak self] in
-                self?.hide()
-                onDismiss()
-            }
+            onDismiss: dismiss
         )
-        show(view: view, autoDismiss: true, prompt: .naming)
+        show(view: view, prompt: .naming, autoDismiss: dismiss)
     }
 
     func showEndPrompt(appName: String) {
@@ -110,10 +117,10 @@ final class MeetingBannerController {
                 self?.onEndKeepRecording?()
             }
         )
-        show(view: view, autoDismiss: false, prompt: .end)
+        show(view: view, prompt: .end, autoDismiss: nil)
     }
 
-    private func show<V: View>(view: V, autoDismiss: Bool, prompt: VisiblePrompt) {
+    private func show<V: View>(view: V, prompt: VisiblePrompt, autoDismiss: (@MainActor () -> Void)?) {
         let wasVisible = panel.isVisible
         visiblePrompt = prompt
 
@@ -141,8 +148,8 @@ final class MeetingBannerController {
             }
         }
 
-        if autoDismiss {
-            scheduleAutoDismiss()
+        if let autoDismiss {
+            scheduleAutoDismiss(autoDismiss)
         } else {
             autoDismissTask?.cancel()
             autoDismissTask = nil
@@ -170,12 +177,12 @@ final class MeetingBannerController {
         })
     }
 
-    private func scheduleAutoDismiss() {
+    private func scheduleAutoDismiss(_ action: @escaping @MainActor () -> Void) {
         autoDismissTask?.cancel()
-        autoDismissTask = Task { @MainActor [weak self] in
+        autoDismissTask = Task { @MainActor in
             try? await Task.sleep(for: Self.autoDismissAfter)
             guard !Task.isCancelled else { return }
-            self?.hide()
+            action()
         }
     }
 

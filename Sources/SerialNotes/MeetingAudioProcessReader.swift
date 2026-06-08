@@ -71,24 +71,6 @@ enum MeetingAudioProcessReader {
         return processIDs.filter { $0 != kAudioObjectUnknown }
     }
 
-    /// Snapshots of only the audio processes currently capturing input. The cheap
-    /// `isRunningInput` flag is read first for every process; the expensive
-    /// bundle-ID + `NSRunningApplication` resolution (and the output-flag read)
-    /// run only for the handful that pass — so start-time attribution doesn't pay
-    /// to resolve every audio process on the system on each scan. Returns `[]`
-    /// (rather than throwing) when the process-object list can't be read — e.g. on
-    /// machines where the per-process API isn't available — so callers degrade to
-    /// their non-audio heuristics instead of crashing.
-    static func currentInputCapturingSnapshots() -> [MeetingAudioProcessSnapshot] {
-        guard let processIDs = try? readProcessObjectList() else { return [] }
-        return processIDs.compactMap { processID in
-            guard readRunningFlag(processID: processID, selector: kAudioProcessPropertyIsRunningInput) else {
-                return nil
-            }
-            return snapshot(processID: processID)
-        }
-    }
-
     static func snapshot(processID: AudioObjectID) -> MeetingAudioProcessSnapshot {
         let pid = readPID(processID: processID)
         let app = pid.flatMap { NSRunningApplication(processIdentifier: $0) }

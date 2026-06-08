@@ -9,6 +9,11 @@ final class RecordingState {
     /// `isRecordingSessionActive`) to suppress its start prompt across the whole
     /// lifecycle. Not observed by any view.
     @ObservationIgnored private(set) var isStarting = false
+    /// True for the whole finalization window — set synchronously in `beginStop`
+    /// (before notifying the detector) and cleared after `finishStop`. Keeps the
+    /// meeting detector's start monitor paused through finalization without
+    /// depending on `finalizationTask`'s assignment timing.
+    @ObservationIgnored private var isFinalizing = false
     var elapsedTime: TimeInterval = 0
     var errorMessage: String?
 
@@ -48,7 +53,7 @@ final class RecordingState {
     /// warm-holding the input) attributing it would fire a phantom "meeting
     /// detected" prompt over the user's own just-started recording.
     var isRecordingSessionActive: Bool {
-        isStarting || isRecording || finalizationTask != nil
+        isStarting || isRecording || isFinalizing
     }
 
     func start(storageDirectory: URL) async {
@@ -165,6 +170,10 @@ final class RecordingState {
         finalizationTask = task
         await task.value
         finalizationTask = nil
+        // Session fully clear — drop the finalizing flag and notify so the detector
+        // re-baselines and resumes its start monitor.
+        isFinalizing = false
+        onRecordingChange?()
     }
 
     private func beginStop(reason: RecordingStopReason) -> StopContext? {
@@ -178,6 +187,12 @@ final class RecordingState {
         let summaryCutoff = Self.summaryCutoff(for: reason, sessionStart: sessionStart)
         startDate = nil
         currentSessionDir = nil
+        // Mark finalizing *before* notifying, so the detector both (a) keeps its
+        // start monitor paused for the whole finalization window (isFinalizing keeps
+        // isRecordingSessionActive true regardless of finalizationTask timing) and
+        // (b) ends call-end monitoring now — which flushes its diagnostics into
+        // pendingMeetingDiagnostics that we read just below.
+        isFinalizing = true
         onRecordingChange?()
         let summarySnapshot = summarySettings?.snapshot() ?? .disabled
         let keepAudioFiles = storageSettings?.saveAudioFiles ?? true

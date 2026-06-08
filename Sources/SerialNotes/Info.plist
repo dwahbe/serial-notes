@@ -12,6 +12,11 @@
     <string>Serial Notes</string>
     <key>CFBundleDisplayName</key>
     <string>Serial Notes</string>
+    <!-- App icon. AppIcon.icns lives next to this plist and is copied into
+         Contents/Resources/ by build-app.sh; regenerate it from the brand
+         mark with ./icon/make-icon.sh. -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <!-- Fallback version values. build-app.sh stamps the real version from
          the latest git tag (CFBundleShortVersionString) + commit count
          (CFBundleVersion) at wrap time; these defaults only apply to builds

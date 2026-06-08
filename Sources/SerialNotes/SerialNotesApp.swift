@@ -188,7 +188,10 @@ private struct MenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: isRecording ? "record.circle" : "waveform.circle")
+            // Custom brand mark (see BrandMark.swift) instead of an SF Symbol so
+            // the menu bar matches the website + app icon. Idle is a monochrome
+            // template (macOS tints/inverts it); recording is the red "live" variant.
+            Image(nsImage: isRecording ? BrandMark.menuBarRecording : BrandMark.menuBarIdle)
             // Tag the local dev build so it's tellable apart from a downloaded
             // production build sitting in the same menu bar.
             if Bundle.main.isDevBuild {

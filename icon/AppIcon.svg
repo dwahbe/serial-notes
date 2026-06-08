@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Serial Notes app icon master (1024×1024).
+
+    Native macOS convention: the brand tile floats inside the canvas with a
+    margin (824px tile centered → 100px inset), Apple's ~22.4% continuous-ish
+    corner radius, a subtle top-to-bottom gradient for depth, and a soft drop
+    shadow. The glyph is the site brand mark (site/public/favicon.svg) — a
+    waveform inside a circle — reused verbatim via a transform that scales the
+    favicon's 32-unit coordinate space into the 824px tile, so the app icon and
+    the website favicon stay pixel-faithful to each other.
+
+    Regenerate the .icns from this file with ./icon/make-icon.sh.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c1e" />
+      <stop offset="1" stop-color="#0a0a0a" />
+    </linearGradient>
+    <filter id="depth" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#000000" flood-opacity="0.22" />
+    </filter>
+  </defs>
+
+  <!-- Brand tile: 824×824 centered in the 1024 canvas, rx ≈ 22.4% -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185"
+        fill="url(#tile)" filter="url(#depth)" />
+
+  <!-- Menu-bar glyph, reusing favicon.svg coords scaled into the tile.
+       scale = 824 / 32 = 25.75; then translated by the 100px margin. -->
+  <g transform="translate(100,100) scale(25.75)">
+    <circle cx="16" cy="16" r="12" fill="none" stroke="#fff" stroke-width="2.0" />
+    <g stroke="#fff" stroke-width="1.6" stroke-linecap="round">
+      <line x1="9.5" y1="13.75" x2="9.5" y2="18.25" />
+      <line x1="12.1" y1="12" x2="12.1" y2="20" />
+      <line x1="14.7" y1="10.75" x2="14.7" y2="21.25" />
+      <line x1="17.3" y1="13.5" x2="17.3" y2="18.5" />
+      <line x1="19.9" y1="12" x2="19.9" y2="20" />
+      <line x1="22.5" y1="14.5" x2="22.5" y2="17.5" />
+    </g>
+  </g>
+</svg>

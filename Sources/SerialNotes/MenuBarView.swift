@@ -58,8 +58,8 @@ struct MenuBarView: View {
     @ViewBuilder
     private var idleContent: some View {
         HStack {
-            Image(systemName: "waveform.circle")
-                .font(.title2)
+            BrandMark()
+                .frame(width: 24, height: 24)
             Text("Serial Notes")
                 .font(.headline)
             Spacer()

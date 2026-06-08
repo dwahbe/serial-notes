@@ -219,8 +219,7 @@ private struct MeetingStartBannerView: View {
 
     var body: some View {
         BannerPill(
-            iconName: "waveform.circle.fill",
-            iconColor: .black,
+            icon: .brand,
             title: "Meeting detected",
             subtitle: appName,
             backgroundColor: .white,
@@ -254,8 +253,7 @@ private struct MeetingNamingBannerView: View {
 
     var body: some View {
         BannerPill(
-            iconName: "person.2.wave.2.fill",
-            iconColor: .black,
+            icon: .symbol("person.2.wave.2.fill", color: .black),
             title: "New voices in this meeting",
             subtitle: subtitle,
             backgroundColor: .white,
@@ -326,8 +324,7 @@ private struct MeetingEndBannerView: View {
 
     var body: some View {
         BannerPill(
-            iconName: "checkmark.circle.fill",
-            iconColor: Self.accent,
+            icon: .symbol("checkmark.circle.fill", color: Self.accent),
             title: "\(model.appName) call ended",
             subtitle: "Wrapping up recording",
             backgroundColor: .white,
@@ -353,9 +350,16 @@ private struct MeetingEndBannerView: View {
     }
 }
 
+/// The leading icon for a banner pill.
+private enum BannerIcon {
+    /// An SF Symbol rendered in palette mode (white primary + `color` secondary).
+    case symbol(String, color: Color)
+    /// The custom Serial Notes brand mark, filled (black disc + white waveform).
+    case brand
+}
+
 private struct BannerPill<Trailing: View>: View {
-    let iconName: String
-    let iconColor: Color
+    let icon: BannerIcon
     let title: String
     let subtitle: String
     let backgroundColor: Color
@@ -363,12 +367,24 @@ private struct BannerPill<Trailing: View>: View {
     var spacerMinLength: CGFloat = 10
     @ViewBuilder let trailing: Trailing
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: iconName)
+    @ViewBuilder private var iconView: some View {
+        switch icon {
+        case let .symbol(name, color):
+            Image(systemName: name)
                 .font(.system(size: 28, weight: .regular))
                 .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, iconColor)
+                .foregroundStyle(.white, color)
+        case .brand:
+            // Filled black mark mirrors the prior `waveform.circle.fill`
+            // treatment (white waveform on a dark disc), but with our glyph.
+            BrandFilledMark(discColor: .black)
+                .frame(width: 28, height: 28)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            iconView
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)

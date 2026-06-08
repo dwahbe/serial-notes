@@ -39,6 +39,16 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 
+# App icon (CFBundleIconFile=AppIcon in Info.plist). Regenerate the .icns from
+# the brand mark with ./icon/make-icon.sh. Warn rather than fail if it's
+# missing so a checkout without the prebuilt icon still produces a runnable app.
+APP_ICON="$SRC_DIR/AppIcon.icns"
+if [[ -f "$APP_ICON" ]]; then
+    cp "$APP_ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+else
+    echo "WARNING: $APP_ICON missing — app will use the generic icon (run ./icon/make-icon.sh)" >&2
+fi
+
 # --- Stamp the version into the bundled Info.plist (before signing) ------
 # Single source of truth is the latest git tag (vX.Y.Z -> X.Y.Z). The build
 # number is the commit count, which is monotonic across the history. An

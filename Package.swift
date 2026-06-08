@@ -28,7 +28,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/SerialNotes",
-            exclude: ["Info.plist", "SerialNotes.entitlements"]
+            exclude: ["Info.plist", "SerialNotes.entitlements", "AppIcon.icns"]
         ),
         .testTarget(
             name: "AudioPipelineTests",

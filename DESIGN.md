@@ -31,8 +31,51 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
 
 ## Icons
 
-- Monochrome SF Symbols only
-- Menu bar icon reflects state: `waveform.circle` (idle), `record.circle` (recording)
+- **Decorative / functional iconography:** monochrome SF Symbols only.
+- **Brand mark** (the waveform-in-a-circle) is a *custom* glyph, **not** an SF Symbol —
+  so it stays identical across the app, the app icon, and the website, and because
+  Apple's SF Symbols license forbids using a system symbol as an app/brand logo. See
+  **### Brand mark** below.
+- Menu bar icon reflects state via the custom `BrandMark` (`BrandMark.swift`): **idle** is
+  a monochrome **template** image (macOS tints it to the menu bar + inverts it when the
+  menu opens); **recording** is the red "live" variant — a filled system-red disc with the
+  waveform knocked in white. (Not the old SF Symbols `waveform.circle` / `record.circle`.)
+
+### Brand mark
+
+- One canonical glyph, drawn in a 32×32 space. **Single source of truth is the website
+  favicon (`site/public/favicon.svg`)**; `BrandMark.swift` (app) and `icon/AppIcon.svg`
+  (app icon) mirror its exact coordinates — keep them in lockstep.
+  - Circle: center (16,16), r 12, stroke 2.0. Six thin bars: stroke 1.6, round caps,
+    at x = 9.5 / 12.1 / 14.7 / 17.3 / 19.9 / 22.5, with a dynamic rhythm that decays to
+    a tiny bar at the right end (SF-waveform-inspired — thin, elegant, generous padding
+    to the ring). `Logo.astro` is the same glyph at 0.5×.
+- The glyph is shared; only the *chrome* changes per use case:
+
+  | Surface | Chrome |
+  |---|---|
+  | Menu bar (idle) | bare glyph, monochrome template |
+  | Menu bar (recording) | filled red disc + white bars |
+  | Popover header | bare glyph, `.primary` |
+  | Meeting-detected banner | filled black disc + white bars |
+  | App icon | glyph on an 824px squircle tile (gradient + shadow) |
+  | Favicon | glyph on a `#0a0a0a` rounded tile |
+  | OG card | white glyph, tile-less, on the dark card background |
+
+- Website rasters (`favicon.ico`, `og-logo.png`) derive from the canonical glyph and only
+  need regenerating if the glyph itself changes.
+
+### App icon
+
+- The brand mark (see above) — a white waveform-in-a-circle — on a near-black tile
+  (`#0a0a0a`). Reuses the canonical favicon glyph coordinates verbatim.
+- Source: `icon/AppIcon.svg` (1024×1024). Native macOS treatment: an 824px squircle
+  (~22.4% corners) floated with margin, a subtle top-to-bottom gradient + soft drop
+  shadow for depth, transparent corners. (Menu bar-only app, so it appears in Finder,
+  Spotlight, and the About box rather than the Dock.)
+- Regenerate the `.icns` with `./icon/make-icon.sh` (built-in tools only:
+  `qlmanage` → `sips` → `iconutil`). It writes `Sources/SerialNotes/AppIcon.icns`,
+  which `build-app.sh` copies into the bundle (`CFBundleIconFile = AppIcon`).
 
 ## Typography & Hierarchy
 

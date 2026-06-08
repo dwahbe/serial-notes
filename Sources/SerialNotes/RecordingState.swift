@@ -3,6 +3,12 @@ import Foundation
 @MainActor @Observable
 final class RecordingState {
     var isRecording = false
+    /// True from `start()` entry until the session is fully spun up — the window
+    /// before `isRecording` flips, during which `start()` awaits model prep +
+    /// session priming. The meeting detector reads this (via
+    /// `isRecordingSessionActive`) to suppress its start prompt across the whole
+    /// lifecycle. Not observed by any view.
+    @ObservationIgnored private(set) var isStarting = false
     var elapsedTime: TimeInterval = 0
     var errorMessage: String?
 
@@ -34,11 +40,30 @@ final class RecordingState {
         isRecording || finalizationTask != nil
     }
 
+    /// Whether a recording session occupies any phase — spinning up, actively
+    /// recording, or finalizing. The meeting detector keys its start-prompt
+    /// suppression on this rather than bare `isRecording`: `start()` runs
+    /// `await`-heavy setup (model prep + session priming) before `isRecording`
+    /// flips, and if the mic is already active in that window (e.g. a meeting app
+    /// warm-holding the input) attributing it would fire a phantom "meeting
+    /// detected" prompt over the user's own just-started recording.
+    var isRecordingSessionActive: Bool {
+        isStarting || isRecording || finalizationTask != nil
+    }
+
     func start(storageDirectory: URL) async {
         if hasActiveOrFinalizingSession {
             await stopAndWait(reason: .manual)
         }
         await stopCapture()
+
+        // Mark the session in flight before the await-heavy setup below. Notifying
+        // now lets the meeting detector clear any "meeting detected" prompt the
+        // instant the user hits Record and stay quiet for the whole start window —
+        // otherwise an already-active mic (e.g. an idle meeting app warm-holding
+        // the input) could be attributed and prompt before `isRecording` flips.
+        isStarting = true
+        onRecordingChange?()
 
         do {
             // Idempotent — if models are already loaded this returns immediately.
@@ -97,6 +122,7 @@ final class RecordingState {
                 }
             }
 
+            isStarting = false
             isRecording = true
             errorMessage = nil
             startDate = now
@@ -110,7 +136,11 @@ final class RecordingState {
                 }
             }
         } catch {
+            // Start failed — clear the in-flight flag and re-notify so the detector
+            // resumes normal evaluation (it suppressed itself on the entry ping).
+            isStarting = false
             errorMessage = error.localizedDescription
+            onRecordingChange?()
         }
     }
 

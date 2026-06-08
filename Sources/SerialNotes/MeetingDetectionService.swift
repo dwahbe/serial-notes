@@ -123,6 +123,10 @@ final class MeetingDetectionService {
     @ObservationIgnored private var suppressedBundleIDs: Set<String> = []
     @ObservationIgnored private var micActive: Bool = false
     @ObservationIgnored private var lastNotifiedBundleID: String?
+    // Last observed *active-recording* state, so `recordingStateChanged` drives
+    // call-end monitoring off real transitions only — `start()` also pings it
+    // mid-spin-up (isRecording still false) to clear a phantom prompt early.
+    @ObservationIgnored private var wasRecordingActive: Bool = false
     // Attribution is sticky while mic is continuously active — see reevaluate() notes.
     @ObservationIgnored private var lockedBundleID: String?
     @ObservationIgnored private var userRejectedThisWindow: Bool = false
@@ -221,19 +225,38 @@ final class MeetingDetectionService {
     }
 
     func recordingStateChanged() {
-        if recordingState?.isRecording == true {
-            // Recording is underway — the lock is now committed to the call-end
-            // association; no late settle tick may move it.
-            cancelAttributionSettle()
-            beginCallEndMonitoringIfNeeded()
-        } else {
-            endCallEndMonitoring()
+        // Drive call-end monitoring off the actual recording transition only.
+        // `start()` also pings this while still spinning up (isRecording == false)
+        // so the detector can clear a phantom prompt the instant the user hits
+        // Record; the transition guard keeps that ping from tearing down — or
+        // double-starting — call-end monitoring.
+        let isActive = recordingState?.isRecording == true
+        if isActive != wasRecordingActive {
+            wasRecordingActive = isActive
+            if isActive {
+                // Recording is underway — the lock is now committed to the
+                // call-end association; no late settle tick may move it.
+                cancelAttributionSettle()
+                beginCallEndMonitoringIfNeeded()
+            } else {
+                endCallEndMonitoring()
+            }
         }
 
-        // User stopped recording while still in a call (mic still active) → treat
-        // as an implicit dismiss so we don't immediately re-prompt. They made a
-        // choice to stop.
-        if recordingState?.isRecording == false, micActive {
+        // Recording stopped (or a start failed) while the mic is still held → treat
+        // it as an implicit dismiss so we don't immediately re-prompt. The user
+        // made a choice to stop. Gated on the session being fully clear, so the
+        // start-time ping (session still in flight) doesn't trip it — the
+        // lifecycle guard in reevaluate() already keeps us quiet during start.
+        if recordingState?.isRecordingSessionActive != true, micActive {
+            // Suppress whatever holds the mic right now — the locked app plus any
+            // app already capturing input (e.g. a meeting app that was
+            // warm-holding the mic the whole time, like an idle Zoom). A genuinely
+            // new call that starts capturing *later* in this same mic window isn't
+            // in this set, so it can still prompt.
+            for owner in availableInputOwners() {
+                suppressedBundleIDs.insert(owner)
+            }
             if let locked = lockedBundleID {
                 suppressedBundleIDs.insert(locked)
             }
@@ -664,7 +687,7 @@ final class MeetingDetectionService {
                 guard !Task.isCancelled, let self else { return }
                 guard self.micActive,
                       let locked = self.lockedBundleID,
-                      self.recordingState?.isRecording != true,
+                      self.recordingState?.isRecordingSessionActive != true,
                       !self.isSuspended,
                       !self.userRejectedThisWindow else { return }
                 let owners = self.availableInputOwners()
@@ -705,7 +728,11 @@ final class MeetingDetectionService {
             return
         }
 
-        if recordingState?.isRecording == true {
+        // A recording session in any phase — spinning up, active, or finalizing —
+        // owns the mic, so never surface a start prompt for it. Keying on the full
+        // lifecycle (not bare isRecording) closes the window where `start()` is
+        // still in `await` and an already-active mic would be misattributed.
+        if recordingState?.isRecordingSessionActive == true {
             cancelAttributionSettle()
             clearDetected()
             return

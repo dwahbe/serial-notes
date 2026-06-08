@@ -1,11 +1,19 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0"
-     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
-     xmlns:dc="http://purl.org/dc/elements/1.1/">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <title>Serial Notes</title>
     <link>https://raw.githubusercontent.com/dwahbe/serial-notes/main/appcast.xml</link>
     <description>Most recent updates to Serial Notes.</description>
     <language>en</language>
+    <item>
+      <title>Version 0.1.0</title>
+      <link>https://github.com/dwahbe/serial-notes/releases/tag/v0.1.0</link>
+      <sparkle:releaseNotesLink>https://github.com/dwahbe/serial-notes/releases/tag/v0.1.0</sparkle:releaseNotesLink>
+      <sparkle:version>66</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <pubDate>Mon, 08 Jun 2026 15:15:59 -0000</pubDate>
+      <enclosure url="https://github.com/dwahbe/serial-notes/releases/download/v0.1.0/SerialNotes.zip" sparkle:edSignature="HPOY6aadazoXAlfZwC/NItTi3R46SgvgAV4xHamYh7mPw60VVhNVcztdO7LqUqmfXjhEbBdmfV247abWCuEpBw==" length="3492459" type="application/octet-stream" />
+    </item>
   </channel>
 </rss>

@@ -1,13 +1,34 @@
 ---
-// "Fully compatible with" trust strip — the apps that read the plain-Markdown
-// export, shown as official brand marks in full brand color. The ".md works
-// anywhere" point is carried by the trailing "+ anything that reads .md" line
-// rather than a dedicated Markdown mark. Per-icon heights optically balance the
-// silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
-// (Apple Notes, Logseq). Logos live in /public/logos.
-// `h` is the mobile height; `hLg` scales each mark up ~1.4x on desktop (sm and
-// above), where the strip has more room to breathe.
-const apps = [
+// Two-sided compatibility strip — the full input → output story in one glance.
+//
+//   Records from  →  the meeting apps Serial Notes auto-detects and captures
+//   Exports to    →  the note apps that read its plain-Markdown export
+//
+// Both rows are styled identically: the same mark + name grammar, the same gaps
+// and margins, and the same per-icon height scheme — `h` (mobile) / `hLg`
+// (~1.4× from `sm`) — so each full-color app icon is optically balanced against
+// the others (dense glyphs like Webex/Discord sit a touch smaller than square
+// tiles like Zoom/FaceTime). Logos are current, full-color brand marks in
+// /public/logos.
+//
+// Honesty: the "Records from" list is exactly the apps with auto-detect +
+// auto-stop (MeetingDetectionService.knownMeetingApps). Google Meet is browser-
+// based with no app to detect, so it's deliberately left off — the trailing
+// "+ anything else playing on your Mac" line carries manual capture of any
+// source (the system-audio tap records everything), which covers Meet.
+const meetingApps = [
+  { name: "Zoom", file: "zoom", h: 30, hLg: 42 },
+  { name: "Teams", file: "teams", h: 29, hLg: 41 },
+  // FaceTime ships no public vector; this is Apple's official AppIcon (.icns →
+  // .png) extracted from FaceTime.app. Squircle has built-in transparent
+  // padding, so it carries a slightly larger height to match the other marks.
+  { name: "FaceTime", file: "facetime", ext: "png", h: 34, hLg: 47 },
+  { name: "Slack", file: "slack", h: 28, hLg: 39 },
+  { name: "Webex", file: "webex", h: 27, hLg: 38 },
+  { name: "Discord", file: "discord", h: 23, hLg: 32 },
+];
+
+const noteApps = [
   { name: "Notion", file: "notion", h: 27, hLg: 38 },
   { name: "Apple Notes", file: "apple-notes", h: 30, hLg: 42 },
   { name: "Obsidian", file: "obsidian", h: 32, hLg: 45 },
@@ -17,14 +38,43 @@ const apps = [
 ---
 
 <section class="border-t border-line">
-  <div class="mx-auto max-w-6xl px-5 py-12 sm:px-8 sm:py-14">
+  <div class="mx-auto max-w-6xl px-5 py-12 sm:px-8 sm:py-16">
+    <!-- ── Records from ───────────────────────────────────────────────── -->
     <p class="text-center font-mono text-[12px] uppercase tracking-[0.18em] text-faint">
-      Fully compatible with
+      Records from
     </p>
-
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
       {
-        apps.map(({ name, file, h, hLg }) => (
+        meetingApps.map(({ name, file, ext = "svg", h, hLg }) => (
+          <div class="group flex items-center gap-2.5">
+            <img
+              src={`/logos/${file}.${ext}`}
+              alt=""
+              aria-hidden="true"
+              decoding="async"
+              style={`--h:${h}px;--h-lg:${hLg}px`}
+              class="logo-mark w-auto"
+            />
+            <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
+              {name}
+            </span>
+          </div>
+        ))
+      }
+
+      <span class="text-[15px] font-medium text-faint">+ anything else playing on your Mac</span>
+    </div>
+
+    <!-- hairline divider between the two halves of the pipeline -->
+    <div class="mx-auto my-12 h-px max-w-xs bg-line sm:my-14"></div>
+
+    <!-- ── Exports to ─────────────────────────────────────────────────── -->
+    <p class="text-center font-mono text-[12px] uppercase tracking-[0.18em] text-faint">
+      Exports to
+    </p>
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
+      {
+        noteApps.map(({ name, file, h, hLg }) => (
           <div class="group flex items-center gap-2.5">
             <img
               src={`/logos/${file}.svg`}

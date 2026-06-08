@@ -103,7 +103,7 @@ const steps = [
                   </span>
                   <div class="py-3">
                     <p class="text-[13px] font-semibold leading-tight text-ink">Meeting detected</p>
-                    <p class="text-[12px] leading-tight text-ink/55">Zoom</p>
+                    <p data-detected-app class="detected-app text-[12px] leading-tight text-ink/55">Zoom</p>
                   </div>
                   <span class="ml-auto py-1.5 pr-1.5">
                     <span class="flex items-center gap-1.5 rounded-full bg-ink px-3 py-[7px] text-[12.5px] font-semibold text-white">
@@ -264,6 +264,15 @@ const steps = [
   }
   .vis.is-active {
     opacity: 1;
+  }
+
+  /* Detection banner cycles through the meeting apps it auto-detects, to show
+     breadth. Fade handled by toggling .is-swapping; static under reduced motion. */
+  .detected-app {
+    transition: opacity 0.25s ease;
+  }
+  .detected-app.is-swapping {
+    opacity: 0;
   }
 
   [data-bar] {
@@ -525,5 +534,42 @@ const steps = [
       bars.forEach((b) => b && (b.style.transform = "scaleX(0)"));
       teardown = (e.matches ? mountDesktop : mountMobile)();
     });
+  }
+</script>
+
+<script>
+  // Cycle the "Meeting detected" banner through the apps Serial Notes
+  // auto-detects, so step 01 advertises breadth without a separate logo row.
+  // Gated to the section's viewport + paused when hidden; static under reduced
+  // motion. Keep this list in sync with Compat.astro's `meetingApps`.
+  const el = document.querySelector<HTMLElement>("[data-detected-app]");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (el && !reduce) {
+    const apps = ["Zoom", "Microsoft Teams", "FaceTime", "Slack", "Webex"];
+    let i = 0;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const tick = () => {
+      el.classList.add("is-swapping");
+      window.setTimeout(() => {
+        i = (i + 1) % apps.length;
+        el.textContent = apps[i];
+        el.classList.remove("is-swapping");
+      }, 250);
+    };
+    const start = () => {
+      if (!timer && !document.hidden) timer = setInterval(tick, 2000);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    document.addEventListener("visibilitychange", () =>
+      document.hidden ? stop() : start()
+    );
+    const io = new IntersectionObserver(
+      ([e]) => (e.isIntersecting ? start() : stop()),
+      { threshold: 0.2 }
+    );
+    io.observe(el);
   }
 </script>

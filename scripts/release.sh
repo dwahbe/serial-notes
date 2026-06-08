@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Cut a release: build + zip the .app, tag the commit, and publish a GitHub
-# (pre-)release with auto-generated notes.
+# Cut a release by tagging + pushing. GitHub Actions does the heavy lifting
+# (build → Developer ID sign → notarize → staple → GitHub Release → appcast
+# update) — see .github/workflows/release.yml. This script just validates the
+# tree and creates the tag so you're not hand-typing `git tag`.
 #
 # Usage:
-#   scripts/release.sh 0.2.0           # beta pre-release (default while < 1.0)
-#   scripts/release.sh 1.0.0 --stable  # mark as a full (non-pre) release
+#   scripts/release.sh 0.2.0
 #
-# Requires: gh CLI (authenticated) + a clean working tree.
+# Versioning: SemVer. Major version 0 stays "beta" — the workflow marks 0.x.y
+# GitHub releases as pre-releases (and the in-app About row derives "(beta)"
+# from the 0 major). Bump to 1.0.0 to leave beta.
 #
-# Distribution note: this signs with whatever SIGN_IDENTITY build-app.sh picks
-# up (ad-hoc by default). Once you have a Developer ID Application cert, export
-# SIGN_IDENTITY and add a notarization step (notarytool submit --wait + stapler
-# staple) after the zip is built, before `gh release create`.
+# The pushed tag triggers the workflow; watch it with: gh run watch
 
 set -euo pipefail
 
@@ -19,35 +19,31 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="${1:-}"
-PRERELEASE=1
-for arg in "${@:2}"; do
-    case "$arg" in
-        --stable) PRERELEASE=0 ;;
-        *) echo "unknown option: $arg" >&2; exit 2 ;;
-    esac
-done
-
-if [[ -z "$VERSION" ]]; then
-    echo "usage: $0 <version> [--stable]   e.g. $0 0.2.0" >&2
-    exit 2
-fi
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "ERROR: version must be X.Y.Z (got '$VERSION')" >&2
+    echo "usage: $0 <version>   e.g. $0 0.2.0" >&2
     exit 2
 fi
-
 TAG="v$VERSION"
 
 # --- preflight ----------------------------------------------------------
-command -v gh >/dev/null || { echo "ERROR: gh CLI not found (brew install gh)" >&2; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; exit 1; }
-
+# This script is git-only (tag + push); CI does all the gh-based publishing,
+# so there's no gh requirement here.
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: working tree is dirty — commit or stash first" >&2
     exit 1
 fi
 if git rev-parse "$TAG" >/dev/null 2>&1; then
     echo "ERROR: tag $TAG already exists" >&2
+    exit 1
+fi
+# The Sparkle build number is the commit count (see build-app.sh), and Sparkle
+# decides upgrades by it. A tag on the SAME commit as the last release would
+# carry an identical build number, so installed users would never be offered
+# the update — refuse it.
+LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+if [[ -n "$LAST_TAG" ]] && [[ "$(git rev-list -n1 "$LAST_TAG")" == "$(git rev-parse HEAD)" ]]; then
+    echo "ERROR: HEAD is the same commit as $LAST_TAG — the build number wouldn't" >&2
+    echo "       increase, so Sparkle wouldn't offer this update. Commit a change first." >&2
     exit 1
 fi
 
@@ -58,31 +54,22 @@ if [[ "$BRANCH" != "main" ]]; then
     [[ "$reply" == "y" || "$reply" == "Y" ]] || exit 1
 fi
 
-# --- build --------------------------------------------------------------
-# Pin the marketing version so the artifact matches the tag we're about to
-# create, regardless of older tags in the history.
-echo "==> building release $VERSION"
-MARKETING_VERSION="$VERSION" "$ROOT/scripts/build-app.sh" release
+# Smoke-check that the tree compiles before we publish a tag. CI does the full
+# signed/notarized build, but catching a broken build here avoids a public tag
+# that produces no release (after which the "tag exists" guard blocks a clean
+# retry until you delete the tag).
+echo "==> compile check (swift build)"
+swift build >/dev/null
 
-APP="$ROOT/.build/SerialNotes.app"
-ZIP="$ROOT/.build/SerialNotes-$VERSION.zip"
-echo "==> zipping $ZIP"
-rm -f "$ZIP"
-/usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+# --- tag + push ---------------------------------------------------------
+# Push the branch first so the tagged commit exists on the remote for CI.
+echo "==> pushing $BRANCH"
+git push origin "$BRANCH"
 
-# --- publish (only after a successful build) ----------------------------
 echo "==> tagging $TAG"
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 
-TITLE="$TAG"
-RELEASE_ARGS=(--title "$TITLE" --generate-notes "$ZIP")
-if [[ "$PRERELEASE" -eq 1 ]]; then
-    TITLE="$TAG (beta)"
-    RELEASE_ARGS=(--title "$TITLE" --generate-notes --prerelease "$ZIP")
-fi
-
-echo "==> creating GitHub release"
-gh release create "$TAG" "${RELEASE_ARGS[@]}"
-
-echo "==> done: $(gh release view "$TAG" --json url -q .url)"
+echo "==> pushed $TAG — GitHub Actions will build, notarize, and publish."
+echo "    watch:  gh run watch"
+echo "    or:     gh run list --workflow=release.yml"

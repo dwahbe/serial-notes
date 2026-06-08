@@ -8,7 +8,7 @@ export const SITE = {
 
   // Links
   github: "https://github.com/dwahbe/serial-notes",
-  download: "https://github.com/dwahbe/serial-notes/releases/latest",
+  download: "https://github.com/dwahbe/serial-notes/releases/latest/download/SerialNotes.zip",
 
   // Authors
   authors: [

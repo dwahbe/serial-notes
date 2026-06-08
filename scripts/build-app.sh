@@ -58,24 +58,104 @@ if [[ -n "$BUILD_NUMBER" ]]; then
 fi
 echo "==> version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST") (build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST"))"
 
+# --- Dev flavor: give ad-hoc local builds a distinct identity ----------------
+# A downloaded production build and a local run.sh build would otherwise share
+# the same bundle ID — and therefore the same TCC permissions and UserDefaults
+# domain — and macOS won't run two same-ID apps at once. Ad-hoc (dev) builds get
+# `.dev` appended so they install side-by-side with production, fully isolated;
+# the app tags itself "DEV" in the menu bar. Release/CI builds (a real Developer
+# ID) keep the production identity. Keyed off the same signal as the timestamp /
+# signing branch below.
+if [[ "${SIGN_IDENTITY:--}" == "-" ]]; then
+    BUNDLE_ID="$BUNDLE_ID.dev"
+    echo "==> dev flavor: $BUNDLE_ID"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$PLIST"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName Serial Notes (Dev)" "$PLIST"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Serial Notes (Dev)" "$PLIST"
+    # Don't let the local build try to Sparkle-update itself to production.
+    /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$PLIST" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$PLIST"
+fi
+
 # Write PkgInfo so LaunchServices treats this as a proper app.
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
+
+# --- Embed Sparkle.framework -------------------------------------------------
+# The SwiftPM binary loads @rpath/Sparkle.framework/Versions/B/Sparkle, but the
+# only rpath `swift build` bakes in is @loader_path. So copy the framework into
+# Contents/Frameworks and add the @executable_path/../Frameworks rpath, or the
+# app can't find Sparkle at launch. `ditto` preserves the framework's symlinks
+# and the executable bits its helper tools need.
+FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
+SPARKLE_SRC="$(/usr/bin/find "$ROOT/.build/artifacts" -type d -path "*/Sparkle.xcframework/macos-*/Sparkle.framework" 2>/dev/null | head -1)"
+if [[ -z "$SPARKLE_SRC" ]]; then
+    echo "ERROR: Sparkle.framework not found under .build/artifacts (did 'swift build' resolve Sparkle?)" >&2
+    exit 1
+fi
+echo "==> embedding Sparkle.framework"
+mkdir -p "$FRAMEWORKS_DIR"
+ditto "$SPARKLE_SRC" "$FRAMEWORKS_DIR/Sparkle.framework"
+APP_BIN="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if ! otool -l "$APP_BIN" | grep -q "@executable_path/../Frameworks"; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BIN"
+fi
 
 # Sign with entitlements so TCC + notifications behave like a real app.
 # Defaults to ad-hoc ("-"). To produce a distributable, notarizable build,
 # export SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" before
-# running. The hardened runtime (--options runtime) is already on, which
-# notarization requires.
+# running.
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+# Two flags differ between dev and release signing:
+#   * Timestamp — a real Developer ID signature needs a secure (RFC-3161)
+#     timestamp from Apple's TSA; notarization rejects signatures without one.
+#     Ad-hoc builds skip it (a network round-trip we don't want in the run.sh
+#     hot loop, and ad-hoc can't be notarized anyway).
+#   * Hardened runtime — required for notarization, so release builds get it.
+#     Ad-hoc dev builds DON'T: hardened runtime enforces library validation,
+#     which requires every loaded library to share the main binary's Team ID.
+#     Ad-hoc signatures carry no Team ID, so an ad-hoc app loading the ad-hoc
+#     Sparkle.framework gets killed by dyld at launch ("Team IDs differ").
+#     The release is safe because it signs the app AND the framework with the
+#     same Developer ID. $RUNTIME_FLAG is intentionally UNQUOTED at the codesign
+#     sites so it expands to two args (--options runtime) or to nothing.
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-    echo "==> codesign (ad-hoc)"
+    echo "==> codesign (ad-hoc, no hardened runtime)"
+    TIMESTAMP_FLAG="--timestamp=none"
+    RUNTIME_FLAG=""
 else
     echo "==> codesign ($SIGN_IDENTITY)"
+    TIMESTAMP_FLAG="--timestamp"
+    RUNTIME_FLAG="--options runtime"
 fi
+
+# Sign Sparkle inside-out: the nested helpers (XPC services, Updater.app,
+# Autoupdate) first, then the framework bundle, then the app last. Each helper
+# signs clean — they ship with only empty / Sparkle-owned entitlements we don't
+# need for Developer ID distribution, and a stray entitlement only risks
+# notarization. The framework is sealed after its helpers so their signatures
+# are recorded in its CodeResources.
+SPARKLE_FW="$FRAMEWORKS_DIR/Sparkle.framework"
+# Sparkle ships its code under a versioned dir (Versions/B across all of 2.x).
+# Read Versions/Current rather than hardcoding "B" so a future framework layout
+# change can't silently skip signing a helper and fail notarization.
+SPARKLE_VER="$(readlink "$SPARKLE_FW/Versions/Current" 2>/dev/null || echo B)"
+for component in \
+    "Versions/$SPARKLE_VER/XPCServices/Downloader.xpc" \
+    "Versions/$SPARKLE_VER/XPCServices/Installer.xpc" \
+    "Versions/$SPARKLE_VER/Updater.app" \
+    "Versions/$SPARKLE_VER/Autoupdate"; do
+    codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG "$TIMESTAMP_FLAG" \
+        "$SPARKLE_FW/$component" >/dev/null
+done
+codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG "$TIMESTAMP_FLAG" \
+    "$SPARKLE_FW" >/dev/null
+
+# Finally the app itself (with entitlements), now that the framework it
+# references is signed.
 codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ENTITLEMENTS" \
-    --options runtime \
-    --timestamp=none \
+    $RUNTIME_FLAG \
+    "$TIMESTAMP_FLAG" \
     "$APP_BUNDLE" >/dev/null
 
 # Register with LaunchServices so the bundle ID resolves immediately.

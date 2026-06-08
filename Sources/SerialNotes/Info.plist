@@ -4,6 +4,10 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>com.serialnotes.app</string>
+    <key>CFBundleExecutable</key>
+    <string>SerialNotes</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
     <key>CFBundleName</key>
     <string>Serial Notes</string>
     <key>CFBundleDisplayName</key>
@@ -22,5 +26,13 @@
     <string>Serial Notes captures system audio to transcribe your meetings.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Serial Notes uses the microphone to record audio alongside system audio.</string>
+    <!-- Sparkle auto-update. SUFeedURL points at the appcast committed to the
+         repo (CI regenerates it on each tagged release). SUPublicEDKey is the
+         EdDSA public key; its private half lives in the keychain (and, for CI,
+         a GitHub secret) and signs every update archive. -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/dwahbe/serial-notes/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>I7y1j8aFLMstcce0vytj3gnUcd5UEKI/PPwX/UWjnWI=</string>
 </dict>
 </plist>

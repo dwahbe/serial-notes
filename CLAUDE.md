@@ -51,6 +51,17 @@ ID, so they skip the `.dev` flavor (gated on `SIGN_IDENTITY == "-"` in
 never reach a notarized download. On-disk data (voice profiles, the default
 storage dir) is **not** isolated by the dev flavor, since those are fixed paths.
 
+To keep the side-by-side promise, `run.sh`'s pre-build process cleanup is **scoped
+to this repo's own dev build only** — it kills processes whose full path is
+`$ROOT/.build/SerialNotes.app/Contents/MacOS/SerialNotes` (via `pkill -f` on the
+absolute path), never the bare executable name or the bundle-relative
+`Contents/MacOS/SerialNotes` suffix. Dev and a downloaded production build ship the
+*same* executable name and the same internal suffix, differing only by location +
+bundle ID, so `killall SerialNotes` or a suffix match would terminate the user's
+production app too. The `debugserver`/`lldb`/`DerivedData` kills stay broad (dev-only
+artifacts). When asked to "stop the local instance" / "kill the local app," that
+always means this dev build, never a production install.
+
 ## Releases
 
 ```bash
@@ -107,6 +118,9 @@ scripts/
   run.sh                   # kill existing instance → build-app.sh → open .app
   release.sh               # validate clean tree → git tag → push (triggers CI release)
   update_appcast.py        # prepend a signed item to appcast.xml (run by CI)
+icon/
+  AppIcon.svg              # 1024px app-icon master (brand mark — see DESIGN.md)
+  make-icon.sh             # regenerate AppIcon.icns (qlmanage → sips → iconutil)
 .github/workflows/
   release.yml              # tag-triggered: build → notarize → staple → GitHub Release → appcast
 appcast.xml                # Sparkle update feed (served raw from main; CI commits new items)
@@ -202,6 +216,8 @@ Sources/
                                       #   reminder delegate so the menu-bar app fronts alerts
     BuildFlavor.swift                 # Bundle.isDevBuild — true for the .dev ad-hoc build,
                                       #   so the menu bar tags it "DEV" (see Build & Run)
+    AppIcon.icns                      # App icon copied into .app/Contents/Resources
+                                      #   by build-app.sh (regenerate: ./icon/make-icon.sh)
     Info.plist                        # Real bundle plist (copied into .app)
     SerialNotes.entitlements          # Applied via codesign in build-app.sh
   SystemAudioTap/          # ObjC module wrapping CoreAudio tap API

@@ -34,6 +34,8 @@ struct SerialNotesApp: App {
     @State private var voiceProfileStore: VoiceProfileStore
     @State private var meetingSessionsStore: MeetingSessionsStore
     @State private var settingsNavigation: SettingsNavigation
+    @State private var updaterController: UpdaterController
+    @State private var onboardingSettings: OnboardingSettings
 
     init() {
         let recording = RecordingState()
@@ -83,6 +85,8 @@ struct SerialNotesApp: App {
         _voiceProfileStore = State(initialValue: voices)
         _meetingSessionsStore = State(initialValue: sessionsStore)
         _settingsNavigation = State(initialValue: navigation)
+        _updaterController = State(initialValue: UpdaterController())
+        _onboardingSettings = State(initialValue: OnboardingSettings())
 
         appDelegate.recordingState = recording
 
@@ -106,8 +110,16 @@ struct SerialNotesApp: App {
                 .preferredColorScheme(.dark)
         } label: {
             // The label renders at launch, so its `.onAppear` captures the real
-            // `openSettings` action before any post-meeting banner needs it.
-            MenuBarLabel(isRecording: recordingState.isRecording, navigation: settingsNavigation)
+            // `openSettings`/`openWindow` actions and decides whether to auto-open
+            // the first-run setup guide before any banner needs them.
+            MenuBarLabel(
+                isRecording: recordingState.isRecording,
+                navigation: settingsNavigation,
+                onboarding: onboardingSettings,
+                recordingState: recordingState,
+                voiceStore: voiceProfileStore,
+                storageSettings: storageSettings
+            )
         }
         .menuBarExtraStyle(.window)
 
@@ -121,7 +133,21 @@ struct SerialNotesApp: App {
                 .environment(meetingDetectionService)
                 .environment(meetingSessionsStore)
                 .environment(settingsNavigation)
+                .environment(updaterController)
+                .environment(recordingState)
         }
+
+        Window("Welcome to Serial Notes", id: onboardingWindowID) {
+            OnboardingFlowView(
+                onboarding: onboardingSettings,
+                storageSettings: storageSettings,
+                voiceStore: voiceProfileStore,
+                identitySettings: identitySettings,
+                meetingDetector: meetingDetectionService
+            )
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 
     /// Bring the Settings window to the front from non-view code (the post-meeting
@@ -147,15 +173,79 @@ struct SerialNotesApp: App {
     }
 }
 
-/// The menu bar icon. Captures the `openSettings` environment action into the shared
-/// navigation so the post-meeting banner (non-view code) can open Settings reliably.
+/// The menu bar icon. Captures the `openSettings` / `openWindow` environment
+/// actions into the shared navigation (so non-view code can open Settings and the
+/// setup guide reliably) and decides whether to auto-open the first-run guide.
 private struct MenuBarLabel: View {
     let isRecording: Bool
     let navigation: SettingsNavigation
+    let onboarding: OnboardingSettings
+    let recordingState: RecordingState
+    let voiceStore: VoiceProfileStore
+    let storageSettings: StorageSettings
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: isRecording ? "record.circle" : "waveform.circle")
-            .onAppear { navigation.openSettingsAction = { openSettings() } }
+        HStack(spacing: 3) {
+            Image(systemName: isRecording ? "record.circle" : "waveform.circle")
+            // Tag the local dev build so it's tellable apart from a downloaded
+            // production build sitting in the same menu bar.
+            if Bundle.main.isDevBuild {
+                Text("DEV")
+                    .font(.system(size: 10, weight: .bold))
+            }
+        }
+        .onAppear {
+            navigation.openSettingsAction = { openSettings() }
+            navigation.openSetupAction = {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate()
+                openWindow(id: onboardingWindowID)
+            }
+            // Defer one runloop turn so the Window scene is registered before
+            // we ask to open it.
+            Task { @MainActor in maybeAutoOpenSetup() }
+        }
+    }
+
+    /// Present the first-run guide once on a fresh install. Skip silently for an
+    /// existing user updating from a pre-onboarding build (they already have app
+    /// state), and never interrupt an in-flight recording.
+    private func maybeAutoOpenSetup() {
+        guard onboarding.needsAutoOpen else { return }
+
+        if hasExistingUserState() {
+            onboarding.markShown()
+            return
+        }
+
+        guard !recordingState.hasActiveOrFinalizingSession else { return }
+
+        // Don't mark shown here: if openWindow no-ops (e.g. the Window scene
+        // isn't registered yet), we want to retry on the next launch rather than
+        // suppress onboarding forever. The guide marks itself shown in its own
+        // onAppear, once it has actually appeared.
+        navigation.openSetupAction?()
+    }
+
+    /// True when the app has prior state — voice profiles, saved meetings, or
+    /// persisted settings — i.e. a returning user rather than a fresh install.
+    private func hasExistingUserState() -> Bool {
+        if !voiceStore.profiles.isEmpty { return true }
+        let defaults = UserDefaults.standard
+        if let name = defaults.string(forKey: "identity.yourName"), !name.isEmpty { return true }
+        if defaults.string(forKey: "storageLocation") != nil { return true }
+        // Cheap directory probe — any saved session folder means a returning
+        // user. Avoids MeetingSessionsStore.reload(), which decodes every
+        // session's sidecar on the main thread at launch.
+        if let entries = try? FileManager.default.contentsOfDirectory(
+            at: storageSettings.storageLocation,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ), !entries.isEmpty {
+            return true
+        }
+        return false
     }
 }

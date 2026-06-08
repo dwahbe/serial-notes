@@ -21,59 +21,10 @@ struct SettingsView: View {
                 .tag(SettingsNavigation.Tab.meetings)
         }
         .frame(width: 520, height: 500)
-        .background(SettingsWindowChrome())
-    }
-}
-
-/// Watches the hosting NSWindow and returns the app to `.accessory` activation
-/// policy once Settings closes. Without this, clicking the gear flips us to
-/// `.regular` and we'd stay there after the window goes away — putting the
-/// app into the Dock and Cmd-Tab until relaunched.
-private struct SettingsWindowChrome: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = WindowCloseObserver()
-        return view
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-private final class WindowCloseObserver: NSView {
-    private var observedWindow: NSWindow?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-
-        // Drop any prior registration before re-registering — guards against
-        // SwiftUI recreating the representable or the view being remounted on
-        // a different window. Otherwise observers accumulate and `windowWillClose`
-        // fires N times per close.
-        if let prior = observedWindow {
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSWindow.willCloseNotification,
-                object: prior
-            )
-            observedWindow = nil
-        }
-
-        guard let window else { return }
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowWillClose(_:)),
-            name: NSWindow.willCloseNotification,
-            object: window
-        )
-        observedWindow = window
-    }
-
-    deinit {
-        // Selector-based observers don't retain self, but the registration
-        // entry persists. Explicit removal keeps NotificationCenter clean.
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func windowWillClose(_ note: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // Shared with the setup guide: restores `.accessory` only when no other
+        // titled window remains, so Settings and the guide can be open together
+        // without fighting over activation policy. See SetupFlowChrome.swift.
+        .background(WindowCloseChrome())
     }
 }
 
@@ -448,6 +399,9 @@ private struct GeneralSettingsTab: View {
     @Environment(StorageSettings.self) private var storageSettings
     @Environment(SummarySettings.self) private var summarySettings
     @Environment(MeetingSettings.self) private var meetingSettings
+    @Environment(UpdaterController.self) private var updater
+    @Environment(RecordingState.self) private var recordingState
+    @Environment(SettingsNavigation.self) private var navigation
 
     private var foundationModelsAvailable: Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
@@ -462,7 +416,18 @@ private struct GeneralSettingsTab: View {
         let build = info?["CFBundleVersion"] as? String ?? "—"
         let major = Int(short.split(separator: ".").first ?? "") ?? 0
         let suffix = major < 1 ? " (beta)" : ""
-        return "\(short)\(suffix) · Build \(build)"
+        let flavor = Bundle.main.isDevBuild ? " · Dev" : ""
+        return "\(short)\(suffix) · Build \(build)\(flavor)"
+    }
+
+    private func showSetupGuide() {
+        // Don't programmatically close Settings here. Closing it would race the
+        // guide window's registration: the shared WindowCloseChrome guard could
+        // run before `openWindow` makes the guide a titled window and flip the app
+        // to `.accessory`, so the guide opens with no Dock presence / not in front.
+        // The guard already keeps `.regular` while either window is open, so the
+        // guide just layers on top; closing it returns to Settings.
+        navigation.openSetupAction?()
     }
 
     var body: some View {
@@ -530,6 +495,12 @@ private struct GeneralSettingsTab: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+                Button("Show Setup Guide…", action: showSetupGuide)
+                    // The guide drives audio permissions + voice enrollment, which
+                    // conflict with a live capture — block re-entry while recording.
+                    .disabled(recordingState.hasActiveOrFinalizingSession)
             } header: {
                 Text("About")
             }

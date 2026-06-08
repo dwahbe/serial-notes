@@ -166,26 +166,6 @@ private struct IntroStep: View {
     }
 }
 
-private struct BulletList: View {
-    let items: [(icon: String, text: String)]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(items, id: \.text) { item in
-                HStack(spacing: 10) {
-                    Image(systemName: item.icon)
-                        .frame(width: 18)
-                        .foregroundStyle(.secondary)
-                    Text(item.text)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 // MARK: - Capture
 
 private struct CaptureStep: View {
@@ -267,22 +247,6 @@ private struct ProgressRing: View {
             Image(systemName: "mic.fill")
                 .font(.system(size: 40, weight: .regular))
                 .foregroundStyle(.tint)
-        }
-    }
-}
-
-private struct PhraseDots: View {
-    let count: Int
-    let active: Int
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<count, id: \.self) { i in
-                Capsule()
-                    .fill(i <= active ? Color.accentColor : Color.secondary.opacity(0.25))
-                    .frame(width: i == active ? 24 : 10, height: 6)
-                    .animation(.easeInOut(duration: 0.2), value: active)
-            }
         }
     }
 }

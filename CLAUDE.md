@@ -4,6 +4,13 @@
 
 Serial Notes — a menu bar-only macOS app that captures meeting audio, transcribes locally, and exports Markdown. See `README.md` for full product context.
 
+## Project status
+
+Public, open-source (MIT — see `LICENSE`). Repo: github.com/dwahbe/serial-notes.
+Implications: commit history, messages, code comments, issues, and PRs are all
+world-readable and permanent — write them as publishable. No security-through-
+obscurity: secrets never go in the repo (CI secrets live in GitHub Secrets).
+
 ## Build & Run
 
 ```bash
@@ -33,50 +40,89 @@ as the wrapped `.app`, leading to duplicate menu bar icons and traced
 
 Requires **Xcode 26+** and **macOS 26+**. Swift tools version 6.2.
 
+**Dev vs production identity:** ad-hoc local builds (`run.sh`, or `build-app.sh`
+with no `SIGN_IDENTITY`) get a distinct `com.serialnotes.app.dev` bundle ID +
+"Serial Notes (Dev)" name, and the app tags itself **"DEV"** in the menu bar
+(`Bundle.isDevBuild`, derived from the `.dev` suffix). This lets a local build run
+side-by-side with a downloaded production build without sharing its TCC
+permissions or UserDefaults domain. Release/CI builds sign with a real Developer
+ID, so they skip the `.dev` flavor (gated on `SIGN_IDENTITY == "-"` in
+`build-app.sh`) and ship as plain `com.serialnotes.app` — the "DEV" marker can
+never reach a notarized download. On-disk data (voice profiles, the default
+storage dir) is **not** isolated by the dev flavor, since those are fixed paths.
+
 ## Releases
 
 ```bash
-./scripts/release.sh 0.2.0           # build + zip + tag + GitHub pre-release
-./scripts/release.sh 1.0.0 --stable  # same, but a full (non-pre) release
+./scripts/release.sh 0.2.0           # validate + tag + push (CI builds & publishes)
 ```
 
-- **Versioning:** SemVer. While in beta we stay on `0.x.y` — major version `0`
-  is itself the "beta" signal (the Settings → About row and the GitHub
-  pre-release flag both derive from it; no `-beta` strings to maintain). Bump
-  to `1.0.0 --stable` to leave beta.
+Releases run in **GitHub Actions** (`.github/workflows/release.yml`), triggered by
+pushing a `vX.Y.Z` tag. `release.sh` is just the trigger — it validates a clean
+tree, tags, and pushes; CI does build → Developer ID sign → notarize → staple →
+GitHub Release → Sparkle update sign → appcast commit. Build/notarize **locally**
+only for testing (`SIGN_IDENTITY=… build-app.sh release` + `notarytool submit`) —
+don't publish locally, since a pushed tag already triggers the CI release.
+
+- **Versioning:** SemVer. While in beta we stay on `0.x.y` — major version `0` is
+  the "beta" signal: the Settings → About row derives "(beta)" from it, and CI
+  titles the GitHub release `vX.Y.Z (beta)`. Beta builds ship as **full GitHub
+  releases, not pre-releases**, so `/releases/latest` and the site download link
+  resolve. Bump to `1.0.0` to drop "(beta)". No `-beta` strings to maintain.
 - **Single source of truth = the git tag.** `build-app.sh` stamps
-  `CFBundleShortVersionString` from the latest tag (`vX.Y.Z` → `X.Y.Z`) and
-  `CFBundleVersion` from the commit count, via `PlistBuddy`, before signing.
-  The keys in `Info.plist` are only fallbacks for builds made outside a git
-  checkout. `release.sh` pins `MARKETING_VERSION` so the artifact always
-  matches the tag it creates.
-- **Release notes** are GitHub-Releases-native: `--generate-notes` builds them
-  from merged PRs since the last tag, grouped by label per `.github/release.yml`.
-  There is intentionally no separate `CHANGELOG.md` to double-maintain — the
-  Releases page is the canonical changelog.
-- **Signing / distribution:** ad-hoc by default. To ship a build others can
-  open without Gatekeeper friction, export
-  `SIGN_IDENTITY="Developer ID Application: … (TEAMID)"` (hardened runtime is
-  already on) and add a `notarytool submit --wait` + `stapler staple` step to
-  `release.sh` after the zip. Until then, a downloaded `.app` is quarantined
-  and testers must `xattr -dr com.apple.quarantine SerialNotes.app`.
+  `CFBundleShortVersionString` from the tag (`vX.Y.Z` → `X.Y.Z`) and
+  `CFBundleVersion` from the commit count, via `PlistBuddy`, before signing. CI
+  passes `MARKETING_VERSION` so the artifact matches the tag. The keys in
+  `Info.plist` are only fallbacks for builds made outside a git checkout.
+- **Distribution asset** is a stable-named `SerialNotes.zip` uploaded per release,
+  so the site links to `…/releases/latest/download/SerialNotes.zip`; each release's
+  per-tag URL stays unique for Sparkle's appcast.
+- **Signing:** Developer ID Application + hardened runtime + secure timestamp,
+  notarized + stapled. `build-app.sh` embeds + inside-out signs `Sparkle.framework`
+  (helpers first, then the framework, then the app). Locally it auto-detects the
+  Developer ID cert; in CI it's imported from secrets. **Ad-hoc dev builds skip
+  hardened runtime** (`build-app.sh` adds `--options runtime` only for a real
+  identity) — otherwise library validation kills the ad-hoc app at launch for
+  loading the team-less ad-hoc `Sparkle.framework`; release builds are safe because
+  app + framework share one Developer ID team. (A notarized, stapled `.app` opens
+  with no quarantine `xattr` dance.)
+- **Auto-updates (Sparkle):** each release archive is EdDSA-signed (`sign_update`)
+  and a new item is prepended to `appcast.xml` (`scripts/update_appcast.py`), which
+  CI commits to `main`. `SUFeedURL` (in `Info.plist`) points at the raw
+  `appcast.xml`; `SUPublicEDKey` is the EdDSA public key. The private key lives in
+  the keychain (and a GitHub secret for CI; export with `generate_keys -x`).
+- **Release notes** are GitHub-native: `--generate-notes` groups merged PRs by
+  label per `.github/release.yml`. No separate `CHANGELOG.md` — the Releases page
+  is the canonical changelog.
+- **CI secrets** (Settings → Secrets and variables → Actions): `BUILD_CERTIFICATE_BASE64`,
+  `P12_PASSWORD`, `KEYCHAIN_PASSWORD`, `NOTARY_API_KEY_BASE64`, `NOTARY_KEY_ID`,
+  `NOTARY_ISSUER_ID`, `SPARKLE_ED_PRIVATE_KEY_BASE64`.
 
 ## Project Structure
 
 ```
 Package.swift              # SwiftPM manifest (executable + tests + ObjC module)
 scripts/
-  build-app.sh             # swift build → wrap into .app → stamp version → codesign → lsregister
+  build-app.sh             # swift build → wrap .app → embed+sign Sparkle → stamp version → codesign → lsregister
   run.sh                   # kill existing instance → build-app.sh → open .app
-  release.sh               # build → zip → git tag → gh (pre-)release w/ auto notes
+  release.sh               # validate clean tree → git tag → push (triggers CI release)
+  update_appcast.py        # prepend a signed item to appcast.xml (run by CI)
+.github/workflows/
+  release.yml              # tag-triggered: build → notarize → staple → GitHub Release → appcast
+appcast.xml                # Sparkle update feed (served raw from main; CI commits new items)
 Sources/
   SerialNotes/             # Main app target (SwiftUI executable)
-    SerialNotesApp.swift              # Entry point, MenuBarExtra + Settings scenes,
-                                      #   kicks off model download at launch,
-                                      #   wires detector → recording stop callbacks,
-                                      #   drains finalization on app quit
+    SerialNotesApp.swift              # Entry point: MenuBarExtra + Settings + onboarding
+                                      #   Window scenes; owns the Sparkle UpdaterController;
+                                      #   kicks off model download + auto-opens the first-run
+                                      #   guide at launch; wires detector → recording stop
+                                      #   callbacks; drains finalization on app quit
     MenuBarView.swift                 # Popover UI (idle + recording states)
-    SettingsView.swift                # Settings window (General + People tabs)
+    SettingsView.swift                # Settings window — General / People / Meetings tabs
+    SettingsNavigation.swift          # @Observable nav coordinator: selectedTab,
+                                      #   openSettingsAction / openSetupAction (lets
+                                      #   non-view code front Settings + the setup window),
+                                      #   pendingNamingSession deep-link
     RecordingState.swift              # Observable recording state + timer +
                                       #   stop(reason:) / stopAndWait / finalizationTask
     StorageSettings.swift             # Storage location + saveAudioFiles toggle persistence
@@ -139,6 +185,23 @@ Sources/
     VoiceProfileStore.swift           # On-disk profile store (JSON + WAV pairs)
     VoiceEnrollmentRecorder.swift     # @Observable mic recorder used by enrollment
     VoiceEnrollmentFlowView.swift     # Face-ID-style guided enrollment flow
+    MeetingSessionsStore.swift        # @Observable store of recent sessions with
+                                      #   unnamed speakers (drives the Meetings tab)
+    SpeakerClipExtractor.swift        # Pulls per-speaker audio clips from a session
+                                      #   for post-meeting naming / enrollment
+    SpeakerNamingView.swift           # Sheet to name a session's detected speakers
+    SystemAudioPermission.swift       # Fires the system-audio TCC prompt by creating +
+                                      #   tearing down a tap (no read-only status API exists)
+    OnboardingSettings.swift          # First-run state (hasShown / completed) in UserDefaults
+    OnboardingFlowView.swift          # Face-ID-style first-run setup guide (permissions →
+                                      #   Apple Intelligence → storage → voice)
+    SetupFlowChrome.swift             # Shared chrome for the setup flows (SetupStepIcon,
+                                      #   BulletList, PhraseDots, WindowCloseChrome)
+    UpdaterController.swift           # Sparkle updater wrapper (@Observable): starts the
+                                      #   updater, drives "Check for Updates…", + a gentle-
+                                      #   reminder delegate so the menu-bar app fronts alerts
+    BuildFlavor.swift                 # Bundle.isDevBuild — true for the .dev ad-hoc build,
+                                      #   so the menu bar tags it "DEV" (see Build & Run)
     Info.plist                        # Real bundle plist (copied into .app)
     SerialNotes.entitlements          # Applied via codesign in build-app.sh
   SystemAudioTap/          # ObjC module wrapping CoreAudio tap API
@@ -167,6 +230,10 @@ Tests/
     MeetingAttributionTests.swift         # Pure mic-ownership mapping +
                                           #   related-bundle-ID grouping tests
     MeetingSettingsTests.swift            # Auto-stop toggle persistence
+    MeetingSessionsStoreTests.swift       # Sessions store: list / name / skip / relabel
+    SpeakerClipExtractorTests.swift       # Per-speaker clip extraction
+    SpeakerRelabelTests.swift             # Transcript speaker-relabel pass
+    OnboardingSettingsTests.swift         # First-run hasShown / completed persistence
 ```
 
 ## Architecture
@@ -183,14 +250,16 @@ Tests/
 - **Voice enrollment**: `VoiceProfileStore` persists profiles to `~/Library/Application Support/SerialNotes/voices/` as `<uuid>.json` + `<uuid>.wav` pairs. `VoiceEnrollmentRecorder` captures a short mic clip with per-phrase silence detection (RMS threshold + hangover) and advances through three phrases. `VoiceEnrollmentFlowView` is the Face-ID-style guided UI. Decoded WAV samples are cached in `VoiceProfileStore` after first read (invalidated by `reload()`, which runs after every save / rename / delete). On session start, `RecordingState` hands enrollment clips, a `SummarySettings.Snapshot`, and the preferred name to `TranscriptionService.startSession(enrollments:summarySettings:micPrimaryName:)`, which primes each diarizer so matching voices get named instead of labeled `You` / `Person N`, and constructs + prewarms the summarizer if needed.
 - **Preferred name**: `IdentitySettings.yourName` (UserDefaults, set in Settings → People) is the user's *optional* display name — independent of voice enrollment, so it works even with no recorded sample. `IdentitySettings.micDisplayName` (the trimmed name, or `You` when unset) is threaded through `RecordingState.start()` into `startSession(micPrimaryName:)` and becomes the single label for the user's mic voice in three places that must agree: the streaming default mic label (`labelForSpeaker`), the `.you` diarizer enrollment label (set in `loadEnrollments` so matched segments carry the same name), and the final-render `CrossChannelEchoFilter.normalizeMicLabels` collapse target. The whole mic side therefore reads as the preferred name instead of `You`. The enrollment flow's naming step pre-fills from / writes back to the same setting.
 - **Detection suspend/resume**: any code that holds the mic for non-meeting purposes (currently just `VoiceEnrollmentRecorder`) must call `MeetingDetectionService.suspendDetection()` before engine start and `resumeDetection()` on stop. Otherwise enrollment audio would false-fire the "meeting detected" banner. Wiring lives in `SettingsView`'s `PeopleSettingsTab.onAppear`.
-- **Settings scene**: a standard SwiftUI `Settings { … }` scene (not a bespoke window). `SettingsWindowChrome` observes the hosting NSWindow's `willCloseNotification` and restores `NSApp.setActivationPolicy(.accessory)`; without this, clicking the gear flips the app to `.regular` and leaves it visible in Dock + Cmd-Tab after the window closes.
+- **Settings scene**: a standard SwiftUI `Settings { … }` scene (not a bespoke window) with three tabs — **General / People / Meetings**. `WindowCloseChrome` (in `SetupFlowChrome.swift`, shared with the onboarding + enrollment windows) observes the hosting NSWindow's `willCloseNotification` and restores `NSApp.setActivationPolicy(.accessory)` **only when no other titled window remains** — so Settings and the setup guide can be open together without fighting over activation policy. Without it, clicking the gear flips the app to `.regular` and leaves it visible in Dock + Cmd-Tab after the window closes.
+- **Auto-updates (Sparkle)**: `UpdaterController` (`@Observable`, owned by `SerialNotesApp`) wraps `SPUStandardUpdaterController(startingUpdater: true)`, mirrors its KVO `canCheckForUpdates` for the Settings → General → "Check for Updates…" button, and installs an `SPUStandardUserDriverDelegate` that declares `supportsGentleScheduledUpdateReminders` and calls `NSApp.activate()` when an update alert is about to show — without it, a scheduled update prompt appears *behind* other apps because this is an `.accessory`/LSUIElement app. Feed + key config (`SUFeedURL`, `SUPublicEDKey`) live in `Info.plist`; the signing/appcast pipeline is in the Releases section.
+- **First-run setup guide**: `OnboardingFlowView` (a `Window` scene, id `onboardingWindowID`) walks a fresh install through mic + system-audio permissions → Apple Intelligence → storage location → optional voice enrollment. `OnboardingSettings` persists `hasShown` / `completed` in UserDefaults (survives Sparkle's in-place `.app` replacement, so it never re-triggers on update). The guide marks itself shown in its **own `.onAppear`** (not at the decide-to-open point) so a failed `openWindow` retries next launch instead of suppressing onboarding forever, and it suspends meeting detection for its whole lifetime. `SystemAudioPermission.requestSystemAudioPermission()` fires the system-audio TCC prompt by creating + tearing down a tap (there is no read-only status API), so the guide re-probes on `didBecomeActive`.
 - **Meeting detection**: `MeetingDetectionService` fuses two local signals — NSWorkspace launch/terminate/activate notifications (known meeting app bundle IDs) and a CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` listener on the default input device (mic in use). Known meeting apps are encoded in `knownMeetingApps: [String: KnownMeetingApp]` — each entry pairs the visible bundle ID with a `displayName` and a list of `coreAudioBundleSubstrings` used by the audio-activity monitor's loose matcher. Single source of truth — adding a new meeting app means adding one row. Currently: Zoom, Microsoft Teams (v1 + v2), FaceTime, Slack, Webex, Discord.
 - **Detection state machine — sticky attribution**: once the mic goes active, the service locks onto one bundle ID and keeps it while the mic stays continuously active. Selection (`selectMeetingApp`) is **mic-ownership-first**: it scans CoreAudio per-process `kAudioProcessPropertyIsRunningInput` (via the shared `MeetingAudioProcessReader` + the pure `meetingAppsCapturingInput(from:)` mapper) and attributes to the known meeting app **actually capturing the mic** — this is what lets a FaceTime call win over an idle, frontmost Slack. Only when no owner is determinable (per-process API unavailable, or the input flag hasn't propagated yet) does it fall back to frontmost → most-recently-activated → alphabetical (never `Set.first`, which is non-deterministic). Stickiness is **audio-aware**: a focus change does not re-attribute, but if a *different* known app becomes the real mic owner the lock moves to it. This both fixes the idle-Slack mis-lock and preserves the original intent — when an app warm-holds the mic at end-of-call (e.g. Zoom) it stays the owner even if the user switches to Slack. If we had to lock via the focus-order fallback (no owner yet), a bounded `attributionSettleTask` re-checks for ~1s so a late-arriving input flag can correct the lock. If the locked app terminates mid-window, detection clears but does not hunt for a replacement. Mic inactivity is the only reset.
 - **Dismiss / Stop-while-in-call**: both flip a `userRejectedThisWindow` flag so no further prompts fire until the mic cycles (signals a new call). Stopping a recording mid-call implicitly counts as dismiss — we don't re-prompt the user who just chose to stop.
 - **Auto-end recording**: when a recording starts and is associated with a detected meeting app (the locked bundle ID at recording-start time), `MeetingDetectionService` spins up `MeetingAudioActivityMonitor` against that app. The monitor installs a `kAudioHardwarePropertyProcessObjectList` listener and per-process `kAudioProcessPropertyIsRunningInput/Output` listeners on every matched process (matched by exact bundle ID + the `coreAudioBundleSubstrings` loose fallback). The monitor is **not purely event-driven**: CoreAudio per-process `IsRunningInput/Output` change notifications fire unreliably for some meeting apps (notably Zoom), so a 3s polling fallback (`MeetingAudioActivityMonitor.startPolling`) re-reads process state on a timer and re-notifies — without it a dropped "became active" / "became inactive" callback would wedge the machine in `monitoring` forever. Activity changes feed `CallEndStateMachine`, a pure reducer with phases `monitoring → inactiveGrace → prompting → suppressed` and effects routed back through `handleCallEndEffects`. Defaults: **2s inactive grace** (short debounce against mid-call audio blips; prompt appears almost as soon as the call ends), **5s countdown**. Both durations live only on the reducer (`inactiveGraceSeconds` / `countdownSeconds`) — `scheduleCallEndGraceTimer` and `startCallEndCountdown` read them rather than hardcoding, so the timers and the reducer can't drift. The end-call banner is a calm "wrapping up recording" notice with a single **Keep Recording** button — no visible countdown and no "Stop Now" (the recording still auto-stops when the window elapses; the countdown runs as one internal sleep, not a per-second tick). Auto-stop fires `.callEndedAuto`, carrying a `MeetingCallEndContext` whose `inactiveAt` drives the summary cutoff. "Keep Recording" puts the machine in `.suppressed` and tears the monitor down — no second prompt fires for that recording. The auto-stop suppression is **per-recording** and lives in the state machine; it is intentionally distinct from the per-mic-cycle `userRejectedThisWindow` flag, which governs the start-prompt machinery. Manual recordings (no detected association) and recordings on machines where the per-process CoreAudio API is unavailable skip auto-stop entirely. The toggle is `MeetingSettings.autoStopAfterCallEnds` (on by default; user-toggleable in Settings via the "Stop recording after call ends" row).
 - **Stop reasons**: `RecordingState.stop(reason: RecordingStopReason = .manual)` accepts `.manual`, `.callEndedAuto(MeetingCallEndContext)`, and `.appQuit`. The reason is written to `session.json`. `stop(reason:)` is fire-and-forget; the synchronous variant `stopAndWait(reason:)` (used by `applicationShouldTerminate`) awaits a shared `finalizationTask` so app-quit drains transcript finalization + summary splice before the process exits. The `MeetingCallEndContext.inactiveAt` is the only cutoff signal used by the summary input — keep all summary-cutoff logic flowing through `RecordingStopReason.summaryCutoffDate` rather than reaching into state machine internals.
 - **Prompt surface**: `MeetingBannerController` renders a custom borderless `NSPanel` (Granola-style) in the top-right of the active screen. `.statusBar` level + `canJoinAllSpaces + fullScreenAuxiliary` collection so it floats over fullscreen Zoom and follows spaces. Two modes: the **start prompt** ("Meeting detected", auto-dismisses after 15s) and the **end-call prompt** ("…call ended — wrapping up recording", single Keep Recording button; dismisses only on activity resume, Keep Recording, recording stop, or auto-stop — never on a timer).
-- **No networking**. Everything runs locally. Exceptions: FluidAudio model downloads from Hugging Face on first launch, and Apple's on-device Foundation Models (which may pull its base model through system channels outside the app's control).
+- **Networking is minimal.** Everything runs locally. Exceptions: FluidAudio model downloads from Hugging Face on first launch; Apple's on-device Foundation Models (which may pull its base model through system channels outside the app's control); and Sparkle auto-update checks (fetch the GitHub-hosted `appcast.xml` and download update archives — no system profiling is sent).
 
 ## Design
 

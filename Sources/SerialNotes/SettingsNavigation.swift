@@ -21,6 +21,11 @@ final class SettingsNavigation {
     /// menu-bar-only app — so we stash the real action here and call it.
     @ObservationIgnored var openSettingsAction: (@MainActor () -> Void)?
 
+    /// Opens the first-run setup guide window. Captured from a live view at launch
+    /// (same reason as `openSettingsAction`) so the auto-open path and the
+    /// "Show Setup Guide…" button in Settings can both present it.
+    @ObservationIgnored var openSetupAction: (@MainActor () -> Void)?
+
     /// Switch to the Meetings tab and (optionally) open a specific session for naming.
     func openMeetings(session: URL?) {
         selectedTab = .meetings

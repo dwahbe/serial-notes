@@ -68,8 +68,15 @@ struct BrandMark: View {
     }
 }
 
+extension Color {
+    /// The "live" recording accent — a warm orange shared by the menu bar
+    /// recording icon and the popover's recording dot, so the two stay in
+    /// lockstep. (Replaces the old system-red; see DESIGN.md.)
+    static let recordingLive = Color(red: 0.898, green: 0.510, blue: 0.180)
+}
+
 /// A filled variant — a solid disc with the waveform knocked in white. Used for
-/// the menu bar **recording** icon (system-red disc; the outline→filled shift
+/// the menu bar **recording** icon (orange disc; the outline→filled shift
 /// reads as a clear "live" state change) and the meeting-detected **banner**
 /// (black disc, matching its bold aesthetic).
 struct BrandFilledMark: View {
@@ -109,10 +116,10 @@ extension BrandMark {
         isTemplate: true
     )
 
-    /// Recording menu bar icon — the red "live" variant. Non-template so the
-    /// red + white survive (a template would flatten it to one tint).
+    /// Recording menu bar icon — the orange "live" variant. Non-template so the
+    /// orange + white survive (a template would flatten it to one tint).
     @MainActor static let menuBarRecording: NSImage = makeMenuBarImage(
-        AnyView(BrandFilledMark(discColor: .red)),
+        AnyView(BrandFilledMark(discColor: .recordingLive)),
         isTemplate: false
     )
 

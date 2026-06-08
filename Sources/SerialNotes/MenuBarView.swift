@@ -239,7 +239,7 @@ struct MenuBarView: View {
     private var recordingContent: some View {
         HStack {
             Circle()
-                .fill(.red)
+                .fill(Color.recordingLive)
                 .frame(width: 8, height: 8)
             Text("Recording")
                 .font(.headline)

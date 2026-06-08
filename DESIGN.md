@@ -38,8 +38,9 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
   **### Brand mark** below.
 - Menu bar icon reflects state via the custom `BrandMark` (`BrandMark.swift`): **idle** is
   a monochrome **template** image (macOS tints it to the menu bar + inverts it when the
-  menu opens); **recording** is the red "live" variant — a filled system-red disc with the
-  waveform knocked in white. (Not the old SF Symbols `waveform.circle` / `record.circle`.)
+  menu opens); **recording** is the orange "live" variant — a filled orange disc
+  (`Color.recordingLive`) with the waveform knocked in white. (Not the old SF Symbols
+  `waveform.circle` / `record.circle`.)
 
 ### Brand mark
 
@@ -55,7 +56,7 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
   | Surface | Chrome |
   |---|---|
   | Menu bar (idle) | bare glyph, monochrome template |
-  | Menu bar (recording) | filled red disc + white bars |
+  | Menu bar (recording) | filled orange disc (`Color.recordingLive`) + white bars |
   | Popover header | bare glyph, `.primary` |
   | Meeting-detected banner | filled black disc + white bars |
   | App icon | glyph on an 824px squircle tile (gradient + shadow) |

@@ -1,6 +1,6 @@
 ---
-// The Serial Notes mark: a black tile holding the menu bar glyph —
-// a waveform inside a circle (matches the app's `waveform.circle` icon).
+// The Serial Notes mark: a black tile holding the brand glyph — a custom
+// waveform inside a circle (the canonical mark; this is favicon.svg at 0.5×).
 interface Props {
   withWordmark?: boolean;
   class?: string;
@@ -11,13 +11,14 @@ const { withWordmark = true, class: className = "" } = Astro.props;
 <a href="/" class={`group inline-flex items-center gap-2.5 ${className}`} aria-label="Serial Notes home">
   <span class="grid h-7 w-7 place-items-center rounded-[7px] bg-ink text-white shadow-sm">
     <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.1" />
-      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-        <line x1="4.6" y1="6" x2="4.6" y2="10" />
-        <line x1="6.3" y1="4.4" x2="6.3" y2="11.6" />
-        <line x1="8" y1="3.6" x2="8" y2="12.4" />
-        <line x1="9.7" y1="5" x2="9.7" y2="11" />
-        <line x1="11.4" y1="5.8" x2="11.4" y2="10.2" />
+      <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.0" />
+      <g stroke="currentColor" stroke-width="0.8" stroke-linecap="round">
+        <line x1="4.75" y1="6.875" x2="4.75" y2="9.125" />
+        <line x1="6.05" y1="6" x2="6.05" y2="10" />
+        <line x1="7.35" y1="5.375" x2="7.35" y2="10.625" />
+        <line x1="8.65" y1="6.75" x2="8.65" y2="9.25" />
+        <line x1="9.95" y1="6" x2="9.95" y2="10" />
+        <line x1="11.25" y1="7.25" x2="11.25" y2="8.75" />
       </g>
     </svg>
   </span>

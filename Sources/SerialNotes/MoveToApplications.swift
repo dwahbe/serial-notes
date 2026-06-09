@@ -19,19 +19,18 @@ enum MoveToApplications {
     private static let declinedDefaultsKey = "moveToApplications.declined"
 
     /// Offer to move the app into /Applications when it's running from anywhere else.
-    /// Returns `true` when a move + relaunch has been initiated — the caller should
-    /// stop bringing the rest of the app up, because the process is about to exit.
+    /// On a successful move this **exits the process** — the relocated copy relaunches
+    /// itself — so it returns only when nothing was moved.
     @MainActor
-    @discardableResult
-    static func moveIfNeeded() -> Bool {
+    static func moveIfNeeded() {
         // Dev builds live in the repo's .build dir on purpose (run.sh owns their
         // lifecycle), and tests must never relocate anything.
-        guard !Bundle.main.isDevBuild else { return false }
-        guard NSClassFromString("XCTestCase") == nil else { return false }
+        guard !Bundle.main.isDevBuild else { return }
+        guard NSClassFromString("XCTestCase") == nil else { return }
 
         let bundleURL = Bundle.main.bundleURL
-        guard !isInApplicationsFolder(bundleURL) else { return false }
-        guard !UserDefaults.standard.bool(forKey: declinedDefaultsKey) else { return false }
+        guard !isInApplicationsFolder(bundleURL) else { return }
+        guard !UserDefaults.standard.bool(forKey: declinedDefaultsKey) else { return }
 
         // A translocated app runs from a read-only mount; the thing we actually
         // want to relocate is the original download it was translocated from.
@@ -41,20 +40,20 @@ enum MoveToApplications {
 
         guard promptToMove() else {
             UserDefaults.standard.set(true, forKey: declinedDefaultsKey)
-            return false
+            return
         }
 
         do {
             try install(from: source, to: destination)
         } catch {
             presentMoveFailure(error)
-            return false
+            return
         }
 
-        // relaunch() exits the process on success; if it returns at all, the helper
-        // couldn't be spawned, so we keep running in place rather than quitting into
-        // nothing (the /Applications copy is ready for the next launch).
-        return relaunch(at: destination, removingOriginal: source)
+        // Exits on success; returns only if the relaunch helper couldn't be spawned,
+        // in which case we keep running in place (the /Applications copy is ready for
+        // the next launch).
+        relaunch(at: destination, removingOriginal: source)
     }
 
     // MARK: - Location checks
@@ -173,7 +172,7 @@ enum MoveToApplications {
             "/usr/sbin/chown -R \(shellQuote(user)) \(shellQuote(destination.path))",
             "/usr/bin/xattr -dr com.apple.quarantine \(shellQuote(destination.path)) 2>/dev/null || true",
         ].joined(separator: "; ")
-        let script = "do shell script \"\(appleScriptEscape(command))\" with administrator privileges"
+        let script = "do shell script \"\(AppleScriptString.escapingLiteral(command))\" with administrator privileges"
         var errorInfo: NSDictionary?
         guard let apple = NSAppleScript(source: script) else {
             throw MoveError.scriptUnavailable
@@ -196,12 +195,10 @@ enum MoveToApplications {
 
     /// Spawn a detached helper that waits for this process to exit, then opens the
     /// relocated copy; trash the leftover original and quit. The helper waits on our
-    /// PID so the new instance never races the old one for the same bundle ID.
-    /// Returns `false` (without exiting) when the helper can't be spawned, so the
-    /// caller keeps the app running in place rather than leaving the user with
-    /// nothing launched.
-    @discardableResult
-    private static func relaunch(at destination: URL, removingOriginal original: URL) -> Bool {
+    /// PID so the new instance never races the old one for the same bundle ID. Returns
+    /// (without exiting) only when the helper can't be spawned, so the caller keeps the
+    /// app running in place rather than leaving the user with nothing launched.
+    private static func relaunch(at destination: URL, removingOriginal original: URL) {
         let pid = ProcessInfo.processInfo.processIdentifier
         let waitThenOpen =
             "while /bin/kill -0 \(pid) 2>/dev/null; do /bin/sleep 0.1; done; " +
@@ -212,7 +209,7 @@ enum MoveToApplications {
         do {
             try helper.run()
         } catch {
-            return false
+            return
         }
 
         // The helper is now waiting on our PID, so it's safe to trash the leftover
@@ -244,10 +241,4 @@ enum MoveToApplications {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Escape a string for embedding inside an AppleScript double-quoted literal.
-    private static func appleScriptEscape(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }

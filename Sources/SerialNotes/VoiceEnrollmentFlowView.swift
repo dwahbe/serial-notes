@@ -13,6 +13,11 @@ struct VoiceEnrollmentFlowView: View {
     let voiceStore: VoiceProfileStore
     let identitySettings: IdentitySettings
     let onDismiss: () -> Void
+    /// When false, a successful save dismisses immediately instead of showing the
+    /// "You're all set" finale. Onboarding sets this so it can own the single
+    /// finale (its own done step, personalized) rather than stacking two near-
+    /// identical confirmations. Defaults true for the standalone Settings flow.
+    var showsCompletion: Bool = true
 
     @State private var step: Step = .intro
     @State private var nameDraft: String = ""
@@ -90,7 +95,13 @@ struct VoiceEnrollmentFlowView: View {
             _ = try voiceStore.save(name: trimmed, kind: .you, clipURL: clipURL)
             identitySettings.yourName = trimmed
             try? FileManager.default.removeItem(at: clipURL)
-            step = .done(profileName: trimmed)
+            if showsCompletion {
+                step = .done(profileName: trimmed)
+            } else {
+                // Embedded in onboarding: hand back so its finale is the single
+                // "You're all set" screen.
+                onDismiss()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

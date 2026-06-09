@@ -16,6 +16,7 @@ let onboardingWindowID = "setup-guide"
 struct OnboardingFlowView: View {
     let onboarding: OnboardingSettings
     let storageSettings: StorageSettings
+    let exportSettings: ExportSettings
     let voiceStore: VoiceProfileStore
     let identitySettings: IdentitySettings
     let meetingDetector: MeetingDetectionService
@@ -36,6 +37,16 @@ struct OnboardingFlowView: View {
     @State private var aiAvailable = false
     @State private var showingEnrollment = false
     @State private var enrollmentRecorder = VoiceEnrollmentRecorder()
+    /// Set once the user picks a notes home in the storage step — drives the
+    /// "saved in … in …" confirmation. Nil while still choosing.
+    @State private var storageConfirmation: StorageConfirmation?
+
+    /// On-disk folder created inside the chosen storage destination. Human-friendly
+    /// so it reads well in the confirmation ("saved in Meeting Notes in Obsidian").
+    /// Deliberately separate from `MeetingExporter.appleNotesFolder` (the folder
+    /// created *inside* the Notes app) — they share the display name by intent, not
+    /// coupling.
+    private let notesFolderName = "Meeting Notes"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,6 +81,7 @@ struct OnboardingFlowView: View {
             systemAudioGranted = false
             awaitingSystemAudio = false
             showingEnrollment = false
+            storageConfirmation = nil
             // Mark shown the moment the guide actually appears (not at the
             // auto-open decision point), so a failed openWindow can't suppress
             // onboarding forever. Idempotent, so manual re-opens are harmless.
@@ -80,15 +92,18 @@ struct OnboardingFlowView: View {
         .background(WindowBringToFront())
         .background(WindowCloseChrome(onClose: handleWindowClose))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Reflect mic + Apple Intelligence changes the user made in System
-            // Settings and returned from (both are cheap, read-only checks).
+            // Reflect mic + system-audio + Apple Intelligence changes the user made
+            // in System Settings (or in the TCC prompt) and returned from — all
+            // cheap, read-only checks.
             refreshPermissionState()
-            // System audio has no read-only status API, so re-probe — off the main
-            // thread — only while a grant is actually pending. This is what catches
-            // the grant when the user dismisses the TCC prompt (which reactivates
-            // the app), without churning CoreAudio on unrelated activations.
+            // System audio can't be confirmed in-session: macOS caches the TCC
+            // status per-process, so the app that fired the prompt can't observe
+            // the grant it just received (only a later launch can). If the user
+            // requested it and we're now reactivating — i.e. they just answered the
+            // prompt — optimistically show the same ✓ as microphone. A later launch
+            // reads the true value either way.
             if awaitingSystemAudio, !systemAudioGranted {
-                probeSystemAudio()
+                systemAudioGranted = true
             }
         }
         .sheet(isPresented: $showingEnrollment) {
@@ -99,7 +114,10 @@ struct OnboardingFlowView: View {
                 onDismiss: {
                     showingEnrollment = false
                     advance(from: .voice)
-                }
+                },
+                // Onboarding owns the single finale (doneStep), personalized with
+                // the name — so enrollment skips its own "You're all set" screen.
+                showsCompletion: false
             )
         }
     }
@@ -110,9 +128,9 @@ struct OnboardingFlowView: View {
         OnboardingStepScaffold(
             icon: SetupStepIcon(systemName: "waveform"),
             title: "Welcome to Serial Notes",
-            subtitle: "Serial Notes records your meetings and turns them into clean, private notes — automatically.",
+            subtitle: "Serial Notes records your meetings and turns them into clean, private notes.",
             bullets: [
-                ("lock.shield", "Everything runs on your Mac."),
+                ("lock.shield", "Your recordings never leave your Mac."),
                 ("menubar.rectangle", "Lives quietly in your menu bar."),
                 ("sparkles", "Transcribes and summarizes on-device."),
             ]
@@ -152,7 +170,6 @@ struct OnboardingFlowView: View {
         ) {
             permissionFooter(
                 granted: systemAudioGranted,
-                waiting: awaitingSystemAudio,
                 grantTitle: "Allow System Audio Recording",
                 onGrant: requestSystemAudio,
                 settingsCandidates: ["x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]
@@ -190,24 +207,65 @@ struct OnboardingFlowView: View {
 
     private var storageStep: some View {
         OnboardingStepScaffold(
-            icon: SetupStepIcon(systemName: "folder"),
-            title: "Where should notes go?",
-            subtitle: "Each meeting saves a Markdown transcript here. You can change this anytime in Settings."
+            icon: SetupStepIcon(
+                systemName: storageConfirmation == nil ? "folder" : "checkmark",
+                style: storageConfirmation == nil ? .outline : .filled(.green),
+                glyphColor: storageConfirmation == nil ? .accentColor : .green,
+                diameter: 104,
+                glyphSize: 42
+            ),
+            title: storageConfirmation == nil ? "Where should notes go?" : "Saved",
+            subtitle: storageConfirmation == nil
+                ? "Each meeting saves a Markdown transcript. Pick a home for them — Serial Notes makes the folder for you."
+                : "You can change this anytime in Settings."
         ) {
-            VStack(spacing: 16) {
-                VStack(spacing: 4) {
-                    Text(storageSettings.storageLocationName)
-                        .font(.body.weight(.medium))
-                    Text(storageSettings.storageLocation.path(percentEncoded: false))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Button("Choose…", action: chooseStorage)
-                    .controlSize(.large)
-                primaryButton("Continue") { advance() }
+            if let confirmation = storageConfirmation {
+                storageConfirmationFooter(confirmation)
+            } else {
+                storagePickerFooter
             }
+        }
+    }
+
+    private var storagePickerFooter: some View {
+        VStack(spacing: 16) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 78), spacing: 12)],
+                alignment: .center,
+                spacing: 12
+            ) {
+                ForEach(NotesDestination.availableApps + NotesDestination.locations) { dest in
+                    DestinationTile(destination: dest) { choose(dest) }
+                }
+            }
+            VStack(spacing: 8) {
+                Button("Choose a folder…", action: chooseCustomStorage)
+                    .buttonStyle(.link)
+                    .font(.callout)
+                skipButton("Skip for now") { advance() }
+            }
+        }
+    }
+
+    private func storageConfirmationFooter(_ confirmation: StorageConfirmation) -> some View {
+        VStack(spacing: 14) {
+            Text(confirmation.message)
+                .font(.body)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360)
+            if let hint = confirmation.hint {
+                Text(hint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 360)
+            }
+            primaryButton("Continue") { advance() }
+            Button("Pick a different place") { storageConfirmation = nil }
+                .buttonStyle(.link)
+                .font(.callout)
         }
     }
 
@@ -225,14 +283,18 @@ struct OnboardingFlowView: View {
     }
 
     private var doneStep: some View {
-        OnboardingStepScaffold(
+        // Fold the voice confirmation into this single finale: when the user
+        // enrolled with a name, greet them by it (the name only exists because the
+        // voice saved) rather than stacking a second "You're all set" screen.
+        let name = identitySettings.yourName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return OnboardingStepScaffold(
             icon: SetupStepIcon(
                 systemName: "checkmark",
                 style: .filled(.green),
                 glyphColor: .green,
                 glyphWeight: .semibold
             ),
-            title: "You're all set",
+            title: name.isEmpty ? "You're all set" : "You're all set, \(name)",
             subtitle: "Serial Notes is ready. It lives in your menu bar and offers to record when it notices a meeting.",
             bullets: [
                 ("waveform.circle", "Detects calls and offers to record."),
@@ -252,7 +314,6 @@ struct OnboardingFlowView: View {
     @ViewBuilder
     private func permissionFooter(
         granted: Bool,
-        waiting: Bool = false,
         grantTitle: String,
         onGrant: @escaping () -> Void,
         settingsCandidates: [String]
@@ -267,11 +328,6 @@ struct OnboardingFlowView: View {
         } else {
             VStack(spacing: 12) {
                 primaryButton(grantTitle, action: onGrant)
-                if waiting {
-                    Label("Waiting for permission…", systemImage: "hourglass")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 HStack(spacing: 16) {
                     Button("Open System Settings") { openSystemSettings(settingsCandidates) }
                         .buttonStyle(.link)
@@ -320,32 +376,72 @@ struct OnboardingFlowView: View {
     }
 
     private func requestSystemAudio() {
-        awaitingSystemAudio = true
-        probeSystemAudio()
-    }
-
-    /// Probe system-audio permission off the main thread (the CoreAudio tap
-    /// create/destroy can stall) and reflect the result. The first probe triggers
-    /// the TCC prompt; a later probe — on the re-activation after the user answers
-    /// it — catches the grant and shows the ✓.
-    private func probeSystemAudio() {
-        Task {
-            let granted = await Task.detached { requestSystemAudioPermission() }.value
-            systemAudioGranted = granted
-            if granted { awaitingSystemAudio = false }
+        // Already granted (from a prior launch, or the user answered then clicked
+        // again) — reflect it without re-firing anything.
+        if case .granted = systemAudioAuthorizationStatus() {
+            systemAudioGranted = true
+            awaitingSystemAudio = false
+            return
         }
+        // Fire the prompt off the main thread (the CoreAudio tap dance can stall).
+        // We can't observe the resulting grant in this process (TCC caches the
+        // status per-process), so `awaitingSystemAudio` lets the didBecomeActive
+        // handler optimistically show ✓ once the user answers and the app
+        // reactivates.
+        awaitingSystemAudio = true
+        Task { await Task.detached { triggerSystemAudioPrompt() }.value }
     }
 
-    private func chooseStorage() {
-        storageSettings.pickFolder()
+    /// One-click destination tile. For Apple Notes / Bear this enables direct-send
+    /// (notes pushed into the app after each meeting); for everything else it
+    /// creates the notes folder in the right place. Falls back to the folder panel
+    /// if the directory can't be created (e.g. a permissions hiccup).
+    private func choose(_ destination: NotesDestination) {
+        guard !destination.comingSoon else { return }
+        if let target = destination.pushTarget {
+            exportSettings.setEnabled(target, true)
+            // Prompt for Apple Notes access right now (at opt-in) rather than after
+            // the first meeting — so the confirmation doesn't need to forewarn them.
+            if target == .appleNotes {
+                Task { await MeetingExporter.requestAppleNotesAccess() }
+            }
+            storageConfirmation = StorageConfirmation(
+                markdownMessage: "After each meeting, your notes go straight into **\(target.displayName)**.",
+                hint: "A Markdown copy is also kept on your Mac."
+            )
+            return
+        }
+        let plan = destination.savePlan(folderName: notesFolderName)
+        guard storageSettings.useFolder(in: plan.base, named: notesFolderName) != nil else {
+            chooseCustomStorage()
+            return
+        }
+        storageConfirmation = .folder(notesFolderName, in: plan.locationLabel, hint: plan.hint)
+    }
+
+    private func chooseCustomStorage() {
+        let picked = storageSettings.pickFolder()
         // pickFolder() restores `.accessory` on the way out — keep the guide in
         // the foreground.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        guard picked else { return }
+        let url = storageSettings.storageLocation
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        storageConfirmation = .folder(
+            url.lastPathComponent,
+            in: parent.isEmpty ? "your Mac" : parent
+        )
     }
 
     private func refreshPermissionState() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        if case .granted = systemAudioAuthorizationStatus() {
+            systemAudioGranted = true
+            awaitingSystemAudio = false
+        } else {
+            systemAudioGranted = false
+        }
         if case .available = SystemLanguageModel.default.availability {
             aiAvailable = true
         } else {
@@ -393,7 +489,7 @@ private struct OnboardingStepScaffold<Footer: View>: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 40)
+                    .frame(maxWidth: 360)
             }
 
             if !bullets.isEmpty {
@@ -409,5 +505,89 @@ private struct OnboardingStepScaffold<Footer: View>: View {
             Spacer(minLength: 0)
         }
         .padding(.top, 16)
+    }
+}
+
+// MARK: - Storage destination tile + confirmation
+
+/// The confirmation shown after the user picks a notes home. Carries a ready-made
+/// Markdown sentence so folder picks ("saved in … in …") and direct-send picks
+/// ("sent straight to …") can be phrased differently.
+private struct StorageConfirmation {
+    let markdownMessage: String
+    /// Optional one-time step to surface notes in the chosen app.
+    let hint: String?
+
+    var message: AttributedString {
+        (try? AttributedString(markdown: markdownMessage)) ?? AttributedString(markdownMessage)
+    }
+
+    /// "Your notes will be saved in **Meeting Notes** in **iCloud Drive**."
+    static func folder(_ folderName: String, in location: String, hint: String? = nil) -> StorageConfirmation {
+        StorageConfirmation(
+            markdownMessage: "Your notes will be saved in **\(folderName)** in **\(location)**.",
+            hint: hint
+        )
+    }
+}
+
+/// A tappable destination in the storage step — an installed app's real icon, or
+/// an SF Symbol for a generic location. A `comingSoon` destination (e.g. Notion)
+/// renders dimmed, labeled, and non-interactive.
+private struct DestinationTile: View {
+    let destination: NotesDestination
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    private var comingSoon: Bool { destination.comingSoon }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                icon
+                    .frame(width: 40, height: 40)
+                    .opacity(comingSoon ? 0.4 : 1)
+                Text(destination.name)
+                    .font(.caption)
+                    .foregroundStyle(comingSoon ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if comingSoon {
+                    Text("Coming soon")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: 78, height: 82)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(hovering && !comingSoon ? 0.08 : 0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(comingSoon)
+        .onHover { hovering = comingSoon ? false : $0 }
+    }
+
+    @ViewBuilder private var icon: some View {
+        if let nsImage = destination.appIcon {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else if let symbol = destination.symbol {
+            Image(systemName: symbol)
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(.tint)
+        } else {
+            Image(systemName: "folder")
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(.secondary)
+        }
     }
 }

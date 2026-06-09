@@ -5,9 +5,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     weak var recordingState: RecordingState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Offer to relocate into /Applications before anything else spins up. If the
-        // user accepts, this relaunches from the new location and never returns.
-        if MoveToApplications.moveIfNeeded() { return }
+        // Offer to relocate into /Applications before anything else spins up. On a
+        // successful move this never returns — the relocated copy relaunches itself.
+        MoveToApplications.moveIfNeeded()
         NSApp.setActivationPolicy(.accessory)
     }
 
@@ -32,6 +32,7 @@ struct SerialNotesApp: App {
     @State private var summarySettings: SummarySettings
     @State private var meetingSettings: MeetingSettings
     @State private var identitySettings: IdentitySettings
+    @State private var exportSettings: ExportSettings
     @State private var modelDownloadState: ModelDownloadState
     @State private var meetingDetectionService: MeetingDetectionService
     @State private var voiceProfileStore: VoiceProfileStore
@@ -46,6 +47,7 @@ struct SerialNotesApp: App {
         let summary = SummarySettings()
         let meeting = MeetingSettings()
         let identity = IdentitySettings()
+        let export = ExportSettings()
         let voices = VoiceProfileStore()
         let sessionsStore = MeetingSessionsStore(storageSettings: storage, voiceStore: voices)
         let navigation = SettingsNavigation()
@@ -56,6 +58,7 @@ struct SerialNotesApp: App {
         recording.summarySettings = summary
         recording.storageSettings = storage
         recording.identitySettings = identity
+        recording.exportSettings = export
         recording.onRecordingChange = { [weak detector] in detector?.recordingStateChanged() }
         // After a recording finalizes with unrecognized speakers, offer to name them.
         recording.onUnnamedSpeakers = { [weak detector, weak navigation, weak sessionsStore] dir, count in
@@ -83,6 +86,7 @@ struct SerialNotesApp: App {
         _summarySettings = State(initialValue: summary)
         _meetingSettings = State(initialValue: meeting)
         _identitySettings = State(initialValue: identity)
+        _exportSettings = State(initialValue: export)
         _modelDownloadState = State(initialValue: modelState)
         _meetingDetectionService = State(initialValue: detector)
         _voiceProfileStore = State(initialValue: voices)
@@ -133,6 +137,7 @@ struct SerialNotesApp: App {
                 .environment(summarySettings)
                 .environment(meetingSettings)
                 .environment(identitySettings)
+                .environment(exportSettings)
                 .environment(meetingDetectionService)
                 .environment(meetingSessionsStore)
                 .environment(settingsNavigation)
@@ -144,6 +149,7 @@ struct SerialNotesApp: App {
             OnboardingFlowView(
                 onboarding: onboardingSettings,
                 storageSettings: storageSettings,
+                exportSettings: exportSettings,
                 voiceStore: voiceProfileStore,
                 identitySettings: identitySettings,
                 meetingDetector: meetingDetectionService

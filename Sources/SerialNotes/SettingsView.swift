@@ -399,6 +399,7 @@ private struct GeneralSettingsTab: View {
     @Environment(StorageSettings.self) private var storageSettings
     @Environment(SummarySettings.self) private var summarySettings
     @Environment(MeetingSettings.self) private var meetingSettings
+    @Environment(ExportSettings.self) private var exportSettings
     @Environment(UpdaterController.self) private var updater
     @Environment(RecordingState.self) private var recordingState
     @Environment(SettingsNavigation.self) private var navigation
@@ -406,6 +407,10 @@ private struct GeneralSettingsTab: View {
     private var foundationModelsAvailable: Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
         return false
+    }
+
+    private var bearInstalled: Bool {
+        MeetingExporter.isInstalled(.bear)
     }
 
     /// e.g. "0.1.0 (beta) · Build 42". Major version 0 is treated as beta so
@@ -434,6 +439,7 @@ private struct GeneralSettingsTab: View {
         @Bindable var summary = summarySettings
         @Bindable var storage = storageSettings
         @Bindable var meeting = meetingSettings
+        @Bindable var export = exportSettings
 
         Form {
             Section {
@@ -478,6 +484,23 @@ private struct GeneralSettingsTab: View {
             .disabled(!foundationModelsAvailable)
 
             Section {
+                Toggle("Send to Apple Notes", isOn: $export.sendToAppleNotes)
+                    .onChange(of: export.sendToAppleNotes) { _, isOn in
+                        // Prompt for Automation access the moment they opt in, rather
+                        // than after the first meeting concludes.
+                        if isOn { Task { await MeetingExporter.requestAppleNotesAccess() } }
+                    }
+                Toggle("Send to Bear", isOn: $export.sendToBear)
+                    .disabled(!bearInstalled)
+            } header: {
+                Text("Send to apps")
+            } footer: {
+                Text("After each meeting, the notes are also added straight into the app — Apple Notes via a “Meeting Notes” folder, Bear as a new note. A Markdown copy always stays in your storage folder. The first Apple Notes send asks permission to add notes.\(bearInstalled ? "" : " Bear isn’t installed.")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("Stop recording after call ends", isOn: $meeting.autoStopAfterCallEnds)
             } header: {
                 Text("Meetings")
@@ -507,5 +530,13 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear {
+            // A disabled toggle can't be switched off, so if Bear was enabled and
+            // later uninstalled, clear the now-stale target rather than leave a
+            // stuck-on switch that quietly fails every meeting.
+            if !bearInstalled, exportSettings.sendToBear {
+                exportSettings.sendToBear = false
+            }
+        }
     }
 }

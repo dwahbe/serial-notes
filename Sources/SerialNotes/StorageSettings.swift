@@ -37,7 +37,43 @@ final class StorageSettings {
             .appendingPathComponent("Documents/SerialNotes")
     }
 
-    func pickFolder() {
+    // MARK: - Quick destinations
+
+    /// `~/Library/Mobile Documents/com~apple~CloudDocs`, or nil when iCloud Drive
+    /// is turned off. Preferred home for synced apps (Apple Notes/Notion import,
+    /// iCloud-hosted Obsidian vaults) so notes follow the user across devices.
+    nonisolated static var iCloudDriveURL: URL? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    nonisolated static var documentsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents")
+    }
+
+    /// Create `base/folderName` (idempotent) and point storage at it — the backing
+    /// for the setup guide's one-click destination tiles, so people pick a home
+    /// instead of hand-navigating a folder panel. Returns the resolved folder, or
+    /// nil if the directory couldn't be created.
+    @discardableResult
+    func useFolder(in base: URL, named folderName: String) -> URL? {
+        let target = base.appendingPathComponent(folderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        storageLocation = target
+        return target
+    }
+
+    /// Show the folder panel and adopt the chosen directory. Returns `true` when
+    /// the user picked a folder, `false` if they cancelled — so callers (the setup
+    /// guide) can show a confirmation only on a real selection.
+    @discardableResult
+    func pickFolder() -> Bool {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -53,11 +89,14 @@ final class StorageSettings {
         NSApp.activate()
         panel.level = .modalPanel
 
+        var picked = false
         if panel.runModal() == .OK, let url = panel.url {
             storageLocation = url
+            picked = true
         }
 
         // Return to accessory (menu bar only) mode
         NSApp.setActivationPolicy(.accessory)
+        return picked
     }
 }

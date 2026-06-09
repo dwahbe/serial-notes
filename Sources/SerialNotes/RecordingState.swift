@@ -26,6 +26,7 @@ final class RecordingState {
     @ObservationIgnored weak var summarySettings: SummarySettings?
     @ObservationIgnored weak var storageSettings: StorageSettings?
     @ObservationIgnored weak var identitySettings: IdentitySettings?
+    @ObservationIgnored weak var exportSettings: ExportSettings?
 
     private var timer: Timer?
     private var startDate: Date?
@@ -196,6 +197,9 @@ final class RecordingState {
         onRecordingChange?()
         let summarySnapshot = summarySettings?.snapshot() ?? .disabled
         let keepAudioFiles = storageSettings?.saveAudioFiles ?? true
+        // Freeze the enabled export targets at stop time so a mid-finalization
+        // toggle can't change what gets pushed.
+        let exportTargets = exportSettings?.activeTargets ?? []
         var diagnostics = pendingMeetingDiagnostics
         diagnostics?.stopReason = reason.diagnosticsValue
         pendingMeetingDiagnostics = nil
@@ -206,6 +210,7 @@ final class RecordingState {
             summarySettings: summarySnapshot,
             keepAudioFiles: keepAudioFiles,
             summaryCutoff: summaryCutoff,
+            exportTargets: exportTargets,
             meetingDiagnostics: diagnostics
         )
     }
@@ -226,6 +231,23 @@ final class RecordingState {
             stats: stats
         )
         notifyUnnamedSpeakersIfNeeded(context: context, count: pendingSpeakers)
+        exportIfNeeded(context)
+    }
+
+    /// Push the finalized transcript into any enabled notes apps (Apple Notes /
+    /// Bear). Fire-and-forget so it can't delay finalization or the detector
+    /// resuming — the first Apple Notes send blocks on a TCC prompt. Skipped on app
+    /// quit (the target app may be quitting too, and we don't delay termination);
+    /// the on-disk transcript is unaffected either way.
+    private func exportIfNeeded(_ context: StopContext) {
+        guard !context.exportTargets.isEmpty,
+              !context.stopReason.isAppQuit,
+              let sessionDir = context.sessionDir else { return }
+        let transcriptURL = sessionDir.appendingPathComponent("transcript.md")
+        let targets = context.exportTargets
+        Task.detached(priority: .utility) {
+            await MeetingExporter.export(targets: targets, transcriptURL: transcriptURL)
+        }
     }
 
     private func notifyUnnamedSpeakersIfNeeded(context: StopContext, count: Int) {
@@ -385,5 +407,6 @@ private struct StopContext: Sendable {
     let summarySettings: SummarySettings.Snapshot
     let keepAudioFiles: Bool
     let summaryCutoff: TimeInterval?
+    let exportTargets: Set<ExportTarget>
     let meetingDiagnostics: MeetingSessionDiagnostics?
 }

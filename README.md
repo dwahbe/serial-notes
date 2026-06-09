@@ -9,7 +9,7 @@ A minimal macOS menu bar app that captures meeting audio, transcribes it locally
 
 ## Download
 
-**[⬇ Download Serial Notes](https://github.com/dwahbe/serial-notes/releases/latest/download/SerialNotes.zip)** — a notarized build, so it opens with no Gatekeeper warnings. Unzip and drag **Serial Notes.app** into your Applications folder.
+**[⬇ Download Serial Notes](https://github.com/dwahbe/serial-notes/releases/latest/download/SerialNotes.dmg)**
 
 Requires **macOS 26+ (Tahoe)** on **Apple Silicon** — see [Requirements](#requirements).
 

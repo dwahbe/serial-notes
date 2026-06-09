@@ -85,23 +85,37 @@ don't publish locally, since a pushed tag already triggers the CI release.
   `CFBundleVersion` from the commit count, via `PlistBuddy`, before signing. CI
   passes `MARKETING_VERSION` so the artifact matches the tag. The keys in
   `Info.plist` are only fallbacks for builds made outside a git checkout.
-- **Distribution asset** is a stable-named `SerialNotes.zip` uploaded per release,
-  so the site links to `…/releases/latest/download/SerialNotes.zip`; each release's
-  per-tag URL stays unique for Sparkle's appcast.
-- **Signing:** Developer ID Application + hardened runtime + secure timestamp,
-  notarized + stapled. `build-app.sh` embeds + inside-out signs `Sparkle.framework`
-  (helpers first, then the framework, then the app). Locally it auto-detects the
-  Developer ID cert; in CI it's imported from secrets. **Ad-hoc dev builds skip
-  hardened runtime** (`build-app.sh` adds `--options runtime` only for a real
-  identity) — otherwise library validation kills the ad-hoc app at launch for
-  loading the team-less ad-hoc `Sparkle.framework`; release builds are safe because
-  app + framework share one Developer ID team. (A notarized, stapled `.app` opens
-  with no quarantine `xattr` dance.)
-- **Auto-updates (Sparkle):** each release archive is EdDSA-signed (`sign_update`)
-  and a new item is prepended to `appcast.xml` (`scripts/update_appcast.py`), which
-  CI commits to `main`. `SUFeedURL` (in `Info.plist`) points at the raw
-  `appcast.xml`; `SUPublicEDKey` is the EdDSA public key. The private key lives in
-  the keychain (and a GitHub secret for CI; export with `generate_keys -x`).
+- **Distribution asset** is a stable-named, **styled drag-to-Applications**
+  `SerialNotes.dmg` uploaded per release, so the site links to
+  `…/releases/latest/download/SerialNotes.dmg`; each release's per-tag URL stays
+  unique for Sparkle's appcast. `scripts/make-dmg.sh` wraps the signed `.app` in the
+  DMG (Finder window with the app, an `Applications` alias, and the
+  `icon/DMGBackground.tiff` backdrop — built-in `hdiutil` + Finder AppleScript, no
+  deps; styling is best-effort and degrades to a plain DMG if automation is denied).
+  Installing into `/Applications` is what lets Sparkle update in place — a quarantined
+  app run from `~/Downloads` is App-Translocated to a read-only path and can never
+  self-update (see the in-app move prompt under Architecture).
+- **Signing:** Developer ID Application + hardened runtime + secure timestamp.
+  Both the `.app` and the `.dmg` are **notarized + stapled** (the app via a throwaway
+  zip submission, then the DMG that wraps it — Gatekeeper checks the image the user
+  downloads). `build-app.sh` embeds + inside-out signs `Sparkle.framework` (helpers
+  first, then the framework, then the app). Locally it auto-detects the Developer ID
+  cert; in CI it's imported from secrets. **Ad-hoc dev builds skip hardened runtime**
+  (`build-app.sh` adds `--options runtime` only for a real identity) — otherwise
+  library validation kills the ad-hoc app at launch for loading the team-less ad-hoc
+  `Sparkle.framework`; release builds are safe because app + framework share one
+  Developer ID team. (A notarized, stapled `.dmg` opens with no quarantine `xattr`
+  dance.)
+- **Auto-updates (Sparkle):** each release DMG is EdDSA-signed (`sign_update`) and a
+  new item is prepended to `appcast.xml` (`scripts/update_appcast.py`), which CI
+  commits to `main`. The item's **`<description>` carries the release notes as
+  self-contained HTML** (CI renders the GitHub-generated notes via the `/markdown`
+  API and adds a little CSS) so Sparkle's "What's New" pane shows the actual changes
+  — it does **not** emit a `sparkle:releaseNotesLink`, which would load the GitHub
+  release page (whole repo nav chrome) inside the update dialog. `SUFeedURL` (in
+  `Info.plist`) points at the raw `appcast.xml`; `SUPublicEDKey` is the EdDSA public
+  key. The private key lives in the keychain (and a GitHub secret for CI; export with
+  `generate_keys -x`).
 - **Release notes** are GitHub-native: `--generate-notes` groups merged PRs by
   label per `.github/release.yml`. No separate `CHANGELOG.md` — the Releases page
   is the canonical changelog.
@@ -117,10 +131,13 @@ scripts/
   build-app.sh             # swift build → wrap .app → embed+sign Sparkle → stamp version → codesign → lsregister
   run.sh                   # kill existing instance → build-app.sh → open .app
   release.sh               # validate clean tree → git tag → push (triggers CI release)
+  make-dmg.sh              # wrap a signed .app in a styled drag-to-Applications DMG (hdiutil + Finder)
   update_appcast.py        # prepend a signed item to appcast.xml (run by CI)
 icon/
   AppIcon.svg              # 1024px app-icon master (brand mark — see DESIGN.md)
   make-icon.sh             # regenerate AppIcon.icns (qlmanage → sips → iconutil)
+  DMGBackground.tiff       # committed @1x/@2x DMG window backdrop (used by make-dmg.sh)
+  make-dmg-background.sh   # regenerate DMGBackground.tiff (AppKit/CoreText → sips → tiffutil)
 .github/workflows/
   release.yml              # tag-triggered: build → notarize → staple → GitHub Release → appcast
 appcast.xml                # Sparkle update feed (served raw from main; CI commits new items)
@@ -223,6 +240,10 @@ Sources/
     UpdaterController.swift           # Sparkle updater wrapper (@Observable): starts the
                                       #   updater, drives "Check for Updates…", + a gentle-
                                       #   reminder delegate so the menu-bar app fronts alerts
+    MoveToApplications.swift          # First-launch "Move to Applications folder?" prompt
+                                      #   (LetsMove-style): relocates a download/translocated
+                                      #   app into /Applications + relaunches, so Sparkle can
+                                      #   update it. Skips dev builds + tests.
     BuildFlavor.swift                 # Bundle.isDevBuild — true for the .dev ad-hoc build,
                                       #   so the menu bar tags it "DEV" (see Build & Run)
     AppIcon.icns                      # App icon copied into .app/Contents/Resources
@@ -279,8 +300,9 @@ Tests/
 - **Preferred name**: `IdentitySettings.yourName` (UserDefaults, set in Settings → People) is the user's *optional* display name — independent of voice enrollment, so it works even with no recorded sample. `IdentitySettings.micDisplayName` (the trimmed name, or `You` when unset) is threaded through `RecordingState.start()` into `startSession(micPrimaryName:)` and becomes the single label for the user's mic voice in three places that must agree: the streaming default mic label (`labelForSpeaker`), the `.you` diarizer enrollment label (set in `loadEnrollments` so matched segments carry the same name), and the final-render `CrossChannelEchoFilter.normalizeMicLabels` collapse target. The whole mic side therefore reads as the preferred name instead of `You`. The enrollment flow's naming step pre-fills from / writes back to the same setting.
 - **Detection suspend/resume**: any code that holds the mic for non-meeting purposes (currently just `VoiceEnrollmentRecorder`) must call `MeetingDetectionService.suspendDetection()` before engine start and `resumeDetection()` on stop. Otherwise enrollment audio would false-fire the "meeting detected" banner. Wiring lives in `SettingsView`'s `PeopleSettingsTab.onAppear`.
 - **Settings scene**: a standard SwiftUI `Settings { … }` scene (not a bespoke window) with three tabs — **General / People / Meetings**. `WindowCloseChrome` (in `SetupFlowChrome.swift`, shared with the onboarding + enrollment windows) observes the hosting NSWindow's `willCloseNotification` and restores `NSApp.setActivationPolicy(.accessory)` **only when no other titled window remains** — so Settings and the setup guide can be open together without fighting over activation policy. Without it, clicking the gear flips the app to `.regular` and leaves it visible in Dock + Cmd-Tab after the window closes.
-- **Auto-updates (Sparkle)**: `UpdaterController` (`@Observable`, owned by `SerialNotesApp`) wraps `SPUStandardUpdaterController(startingUpdater: true)`, mirrors its KVO `canCheckForUpdates` for the Settings → General → "Check for Updates…" button, and installs an `SPUStandardUserDriverDelegate` that declares `supportsGentleScheduledUpdateReminders` and calls `NSApp.activate()` when an update alert is about to show — without it, a scheduled update prompt appears *behind* other apps because this is an `.accessory`/LSUIElement app. Feed + key config (`SUFeedURL`, `SUPublicEDKey`) live in `Info.plist`; the signing/appcast pipeline is in the Releases section.
-- **First-run setup guide**: `OnboardingFlowView` (a `Window` scene, id `onboardingWindowID`) walks a fresh install through mic + system-audio permissions → Apple Intelligence → storage location → optional voice enrollment. `OnboardingSettings` persists `hasShown` / `completed` in UserDefaults (survives Sparkle's in-place `.app` replacement, so it never re-triggers on update). The guide marks itself shown in its **own `.onAppear`** (not at the decide-to-open point) so a failed `openWindow` retries next launch instead of suppressing onboarding forever, and it suspends meeting detection for its whole lifetime. `SystemAudioPermission.requestSystemAudioPermission()` fires the system-audio TCC prompt by creating + tearing down a tap (there is no read-only status API), so the guide re-probes on `didBecomeActive`.
+- **Auto-updates (Sparkle)**: `UpdaterController` (`@Observable`, owned by `SerialNotesApp`) wraps `SPUStandardUpdaterController(startingUpdater: true)`, mirrors its KVO `canCheckForUpdates` for the Settings → General → "Check for Updates…" button, and installs an `SPUStandardUserDriverDelegate` that declares `supportsGentleScheduledUpdateReminders` and calls `NSApp.activate()` when an update alert is about to show — without it, a scheduled update prompt appears *behind* other apps because this is an `.accessory`/LSUIElement app. Feed + key config (`SUFeedURL`, `SUPublicEDKey`) live in `Info.plist`; the signing/appcast pipeline is in the Releases section. The "What's New" pane renders from the appcast item's embedded `<description>` HTML, not a link to GitHub (see Releases).
+- **Install location / Move to Applications**: Sparkle can only update an app that lives in a stable, writable folder. A freshly downloaded, quarantined app run from `~/Downloads` is **App-Translocated** by Gatekeeper (run from a random read-only mount), so it can never self-update — the "can't be updated if it's running from the location it was downloaded to" dead end. Two guards keep users out of it: the **DMG's drag-to-Applications layout** (primary nudge — see Releases) and **`MoveToApplications.moveIfNeeded()`**, called first thing in `AppDelegate.applicationDidFinishLaunching`. The latter, when the app isn't already in an Applications folder, offers to move it there and relaunch: it resolves the real source path via `SecTranslocate*` (dlsym'd from the Security framework — not in the Swift overlay), copies into `/Applications` (escalating to an authenticated `ditto` only if a plain copy is denied), clears the quarantine xattr, trashes the leftover download, and relaunches once this process exits. It no-ops for dev builds, under tests, and after the user declines once (a UserDefaults flag).
+- **First-run setup guide**: `OnboardingFlowView` (a `Window` scene, id `onboardingWindowID`) walks a fresh install through mic + system-audio permissions → Apple Intelligence → storage location → optional voice enrollment. `OnboardingSettings` persists `hasShown` / `completed` in UserDefaults (survives Sparkle's in-place `.app` replacement, so it never re-triggers on update). The guide marks itself shown in its **own `.onAppear`** (not at the decide-to-open point) so a failed `openWindow` retries next launch instead of suppressing onboarding forever, and it suspends meeting detection for its whole lifetime. `SystemAudioPermission.requestSystemAudioPermission()` fires the system-audio TCC prompt by creating + tearing down a tap (there is no read-only status API), so the guide re-probes on `didBecomeActive`. The window is surfaced by `WindowBringToFront` (in `SetupFlowChrome.swift`) — `orderFrontRegardless()` from the hosting window's `viewDidMoveToWindow` — **without** flipping to `.regular`, so the menu-bar-only (`.accessory`) app fronts + focuses it with **no Dock icon** during setup. (Flipping to `.regular` there is what previously parked the app in the Dock on first launch; an accessory app can front a window via `orderFrontRegardless` without it.)
 - **Meeting detection — edge-triggered**: `MeetingDetectionService` drives the start prompt off **input-capture transitions**, not the level of "is the mic in use". `MeetingInputCaptureMonitor` watches every known meeting app's per-process `kAudioProcessPropertyIsRunningInput` (process-list listener + per-process listeners + a ~1.5s poll safety net for apps whose CoreAudio notifications drop, notably Zoom) and emits the set of bundle IDs currently capturing the mic. That stream feeds the pure `MeetingStartDetector` reducer, which prompts **only when a known meeting app freshly *starts* capturing** (a false→true transition) and sustains it past a debounce. This is what fixes the idle-Zoom false positive: an app that merely *warm-holds* the mic with no call produces no transition, so it never prompts. Known meeting apps are encoded in `knownMeetingApps: [String: KnownMeetingApp]` — each entry pairs the visible bundle ID with a `displayName` and a list of `coreAudioBundleSubstrings` used by the shared `knownMeetingAppBundleID(for:)` matcher. Single source of truth — adding a new meeting app means adding one row. Currently: Zoom, Microsoft Teams (v1 + v2), FaceTime, Slack, Webex, Discord. The monitor only runs while **at least one known meeting app is running** (`runningMeetingApps`, maintained by NSWorkspace launch/terminate) and no recording session is in flight — so when no meeting app is open there's zero polling at idle (`shouldMonitorInput` is the single gate, applied via `updateInputMonitoring`). NSWorkspace activate notifications maintain an `activationOrder` for disambiguating simultaneous transitions (frontmost → most-recently-activated → alphabetical, never `Set.first`). A transient `readProcessObjectList()` failure is **not** reported as "nothing capturing" — the monitor preserves the last-known set (mirroring the call-end monitor's `.unknown`) so an ongoing call isn't seen as ended and re-prompted on recovery.
 - **`MeetingStartDetector` semantics — baseline + transition + debounce + lock**: the first capturing-set snapshot is the **baseline** — anything already capturing when the monitor starts is treated as in-progress and never prompts (so launching mid-call gives no auto-prompt; recording manually still works). After baseline, a known app entering the capturing set is a candidate; it prompts only after `debounceSeconds` of sustained capture (the service runs the timer and calls `debounceTimerFired`), which rejects momentary idle mic-pokes. One prompt at a time: the reducer **locks** to the prompted app and ignores others until it stops capturing. When the prompted/pending app stops, the lock/episode clears, so the same app re-prompts only on a genuinely new call (stop → start). On machines where the per-process API is unavailable, no apps ever surface as capturing → no prompts (there is no focus-order fallback — that was the false-positive source).
 - **Dismiss / Stop-while-in-call**: `dismiss()` marks the current capture episode **suppressed** so the dismissed app stays quiet until it stops capturing — but a *different* app that starts capturing later in the same window still prompts (a real new call). The banner's 15s auto-dismiss routes through the same dismiss action (not a bare `hide()`), so ignoring the prompt clears the reducer lock + `detectedMeeting` rather than wedging a stale "detected" offer in the popover for the rest of the call. A recording session in any phase (starting / active / finalizing, via `RecordingState.isRecordingSessionActive`) pauses the start monitor entirely and re-baselines on resume — `RecordingState` fires `onRecordingChange` *after* `finalizationTask` is set and again after it clears, so the monitor stays paused through finalization and there's no window where a swallowed prompt leaves a phantom lock.

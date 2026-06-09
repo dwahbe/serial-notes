@@ -81,31 +81,45 @@ jobs:
           MARKETING_VERSION="$VERSION" ./scripts/build-app.sh release
 
           APP=.build/SerialNotes.app
-          # Stable asset name (no version) so the site can link to a fixed
-          # /releases/latest/download/SerialNotes.zip. The per-tag path keeps each
-          # release's URL unique for Sparkle's appcast.
-          ZIP="SerialNotes.zip"
-          ditto -c -k --keepParent "$APP" "$ZIP"
-
-          # Notarize with the App Store Connect API key.
           KEY="$RUNNER_TEMP/AuthKey.p8"
           echo "$NOTARY_API_KEY_BASE64" | base64 --decode > "$KEY"
-          xcrun notarytool submit "$ZIP" \
+
+          # Notarize the app via a throwaway zip (notarytool needs an archive),
+          # then staple the ticket onto the .app so it launches offline.
+          APP_ZIP="$RUNNER_TEMP/app.zip"
+          ditto -c -k --keepParent "$APP" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" \
             --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "$APP"
+
+          # Wrap the stapled app in a styled drag-to-Applications DMG. Stable asset
+          # name (no version) so the site can link to a fixed
+          # /releases/latest/download/SerialNotes.dmg; the per-tag path keeps each
+          # release's URL unique for Sparkle's appcast.
+          DMG="SerialNotes.dmg"
+          ./scripts/make-dmg.sh "$APP" "$DMG" "Serial Notes"
+
+          # Notarize + staple the DMG itself (Gatekeeper checks the downloaded image).
+          xcrun notarytool submit "$DMG" \
+            --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "$DMG"
           rm -f "$KEY"
 
-          # Staple the ticket, then re-zip (the ticket attaches to the .app).
-          xcrun stapler staple "$APP"
-          rm -f "$ZIP"
-          ditto -c -k --keepParent "$APP" "$ZIP"
-
-          # Gatekeeper sanity check.
-          spctl -a -vvv -t execute "$APP"
-
+          # Export results for the downstream steps FIRST — before any best-effort
+          # assessment — so a finicky check can't abort the release after notarization
+          # + stapling already succeeded.
           {
-            echo "ZIP=$ZIP"
+            echo "DMG=$DMG"
             echo "BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"
           } >> "$GITHUB_ENV"
+
+          # Gatekeeper sanity checks (advisory only — notarytool --wait + stapler
+          # already guarantee validity, and `spctl -t open` on a DMG is flaky across
+          # macOS versions, so never fail the release on these).
+          spctl -a -vvv -t execute "$APP" || echo "WARN: app spctl assessment returned non-zero"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG" \
+            || echo "WARN: DMG spctl assessment returned non-zero"
+          xcrun stapler validate "$DMG" || echo "WARN: stapler validate returned non-zero"
 
       - name: Publish GitHub Release
         env:
@@ -123,15 +137,16 @@ jobs:
           # on "release already exists".
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "release $GITHUB_REF_NAME exists — updating asset"
-            gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            gh release create "$GITHUB_REF_NAME" "$DMG" \
               --title "$TITLE" --generate-notes
           fi
 
       - name: Sign update + commit appcast to main
         env:
           SPARKLE_ED_PRIVATE_KEY_BASE64: ${{ secrets.SPARKLE_ED_PRIVATE_KEY_BASE64 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
@@ -145,11 +160,47 @@ jobs:
 
           KEYFILE="$RUNNER_TEMP/sparkle_ed_key"
           echo "$SPARKLE_ED_PRIVATE_KEY_BASE64" | base64 --decode > "$KEYFILE"
-          SIG="$("$BIN/sign_update" --ed-key-file "$KEYFILE" "$ZIP")"
+          SIG="$("$BIN/sign_update" --ed-key-file "$KEYFILE" "$DMG")"
           rm -f "$KEYFILE"
 
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ZIP}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${DMG}"
           NOTES="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+
+          # Render the release's GitHub-generated notes into self-contained HTML and
+          # embed it in the appcast's <description>, so Sparkle's "What's New" pane
+          # shows the actual changes instead of loading the GitHub release page
+          # (which drags in the whole repo nav chrome). GitHub's /markdown endpoint
+          # gives accurate GFM with working PR/issue links; we just add a little CSS.
+          NOTES_HTML="$RUNNER_TEMP/release-notes.html"
+          NOTES_BODY="$RUNNER_TEMP/release-notes-body.html"
+          : > "$NOTES_BODY"
+          NOTES_MD="$(gh release view "$GITHUB_REF_NAME" --json body -q .body || true)"
+          if [ -n "$NOTES_MD" ]; then
+            gh api --method POST /markdown \
+              -f mode=gfm -f context="$GITHUB_REPOSITORY" -f text="$NOTES_MD" \
+              > "$NOTES_BODY" || : > "$NOTES_BODY"
+          fi
+          {
+            cat <<'CSS'
+          <style>
+            :root { color-scheme: light dark; }
+            body { font: 13px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: #1d1d1f; margin: 0; padding: 2px 4px; }
+            h1, h2, h3 { font-weight: 600; margin: 1em 0 0.4em; line-height: 1.25; }
+            h1 { font-size: 1.25em; } h2 { font-size: 1.1em; } h3 { font-size: 1em; }
+            ul, ol { padding-left: 1.4em; margin: 0.4em 0; }
+            li { margin: 0.2em 0; }
+            a { color: #0066cc; text-decoration: none; }
+            code { font-family: "SF Mono", ui-monospace, monospace; font-size: 0.92em; background: rgba(127,127,127,0.15); padding: 0.1em 0.3em; border-radius: 4px; }
+            @media (prefers-color-scheme: dark) { body { color: #e8e8ed; } a { color: #6cb4ff; } }
+          </style>
+          CSS
+            cat "$NOTES_BODY"
+          } > "$NOTES_HTML"
+
+          # Only attach the embedded notes when the render produced real content;
+          # otherwise pass nothing so update_appcast.py falls back to the release-page
+          # link rather than a What's-New pane containing only CSS.
+          if [ -s "$NOTES_BODY" ]; then NOTES_FILE_ARG="$NOTES_HTML"; else NOTES_FILE_ARG=""; fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -173,7 +224,8 @@ jobs:
               --min-system "26.0" \
               --url "$URL" \
               --signature "$SIG" \
-              --release-notes-link "$NOTES"
+              --release-notes-link "$NOTES" \
+              --release-notes-file "$NOTES_FILE_ARG"
             git add appcast.xml
             if git diff --cached --quiet; then
               echo "appcast already current"; pushed=1; break

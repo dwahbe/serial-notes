@@ -526,6 +526,12 @@ private struct GeneralSettingsTab: View {
                     .disabled(recordingState.hasActiveOrFinalizingSession)
             } header: {
                 Text("About")
+            } footer: {
+                if recordingState.hasActiveOrFinalizingSession {
+                    Text("The setup guide is available after the current recording finishes saving.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

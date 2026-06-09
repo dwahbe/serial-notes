@@ -7,13 +7,14 @@ final class RecordingState {
     /// before `isRecording` flips, during which `start()` awaits model prep +
     /// session priming. The meeting detector reads this (via
     /// `isRecordingSessionActive`) to suppress its start prompt across the whole
-    /// lifecycle. Not observed by any view.
+    /// lifecycle.
     @ObservationIgnored private(set) var isStarting = false
     /// True for the whole finalization window — set synchronously in `beginStop`
     /// (before notifying the detector) and cleared after `finishStop`. Keeps the
     /// meeting detector's start monitor paused through finalization without
-    /// depending on `finalizationTask`'s assignment timing.
-    @ObservationIgnored private var isFinalizing = false
+    /// depending on `finalizationTask`'s assignment timing. Observable because
+    /// Settings disables setup-guide re-entry while finalization is active.
+    private(set) var isFinalizing = false
     var elapsedTime: TimeInterval = 0
     var errorMessage: String?
 
@@ -43,7 +44,7 @@ final class RecordingState {
     }
 
     var hasActiveOrFinalizingSession: Bool {
-        isRecording || finalizationTask != nil
+        isRecording || isFinalizing
     }
 
     /// Whether a recording session occupies any phase — spinning up, actively

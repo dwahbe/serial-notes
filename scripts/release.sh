@@ -7,9 +7,11 @@
 # Usage:
 #   scripts/release.sh 0.2.0
 #
-# Versioning: SemVer. Major version 0 stays "beta" — the workflow marks 0.x.y
-# GitHub releases as pre-releases (and the in-app About row derives "(beta)"
-# from the 0 major). Bump to 1.0.0 to leave beta.
+# Versioning: SemVer. Major version 0 stays "beta" — but beta builds ship as
+# FULL GitHub releases, not pre-releases, so /releases/latest and the site
+# download link resolve. CI just titles them "vX.Y.Z (beta)"; the "(beta)"
+# signal is derived from the 0 major (the in-app About row). Bump to 1.0.0 to
+# leave beta.
 #
 # The pushed tag triggers the workflow; watch it with: gh run watch
 

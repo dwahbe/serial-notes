@@ -163,43 +163,7 @@ jobs:
           rm -f "$KEYFILE"
 
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${DMG}"
-          NOTES="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
-
-          # Render the release's GitHub-generated notes into self-contained HTML and
-          # embed it in the appcast's <description>, so Sparkle's "What's New" pane
-          # shows the actual changes instead of loading the GitHub release page
-          # (which drags in the whole repo nav chrome). GitHub's /markdown endpoint
-          # gives accurate GFM with working PR/issue links; we just add a little CSS.
-          NOTES_HTML="$RUNNER_TEMP/release-notes.html"
-          NOTES_BODY="$RUNNER_TEMP/release-notes-body.html"
-          : > "$NOTES_BODY"
-          NOTES_MD="$(gh release view "$GITHUB_REF_NAME" --json body -q .body || true)"
-          if [ -n "$NOTES_MD" ]; then
-            gh api --method POST /markdown \
-              -f mode=gfm -f context="$GITHUB_REPOSITORY" -f text="$NOTES_MD" \
-              > "$NOTES_BODY" || : > "$NOTES_BODY"
-          fi
-          {
-            cat <<'CSS'
-          <style>
-            :root { color-scheme: light dark; }
-            body { font: 13px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: #1d1d1f; margin: 0; padding: 2px 4px; }
-            h1, h2, h3 { font-weight: 600; margin: 1em 0 0.4em; line-height: 1.25; }
-            h1 { font-size: 1.25em; } h2 { font-size: 1.1em; } h3 { font-size: 1em; }
-            ul, ol { padding-left: 1.4em; margin: 0.4em 0; }
-            li { margin: 0.2em 0; }
-            a { color: #0066cc; text-decoration: none; }
-            code { font-family: "SF Mono", ui-monospace, monospace; font-size: 0.92em; background: rgba(127,127,127,0.15); padding: 0.1em 0.3em; border-radius: 4px; }
-            @media (prefers-color-scheme: dark) { body { color: #e8e8ed; } a { color: #6cb4ff; } }
-          </style>
-          CSS
-            cat "$NOTES_BODY"
-          } > "$NOTES_HTML"
-
-          # Only attach the embedded notes when the render produced real content;
-          # otherwise pass nothing so update_appcast.py falls back to the release-page
-          # link rather than a What's-New pane containing only CSS.
-          if [ -s "$NOTES_BODY" ]; then NOTES_FILE_ARG="$NOTES_HTML"; else NOTES_FILE_ARG=""; fi
+          RELEASE_LINK="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -223,8 +187,7 @@ jobs:
               --min-system "26.0" \
               --url "$URL" \
               --signature "$SIG" \
-              --release-notes-link "$NOTES" \
-              --release-notes-file "$NOTES_FILE_ARG"
+              --item-link "$RELEASE_LINK"
             git add appcast.xml
             if git diff --cached --quiet; then
               echo "appcast already current"; pushed=1; break

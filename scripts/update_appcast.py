@@ -12,12 +12,12 @@ Usage:
     --version 65 --short-version 0.2.0 --min-system 26.0 \
     --url https://.../SerialNotes.dmg \
     --signature 'sparkle:edSignature="..." length="12345"' \
-    --release-notes-link https://.../releases/tag/v0.2.0 \
-    --release-notes-file /tmp/release-notes.html
+    --item-link https://.../releases/tag/v0.2.0
 
 --signature is the raw stdout of `sign_update` (edSignature + length attrs).
---release-notes-file is embedded as the item's <description> (Sparkle's What's
-New pane); --release-notes-link only sets the item's <link> permalink.
+--item-link is stored as the item's <link> permalink only. The generator
+deliberately does not emit <description> or <sparkle:releaseNotesLink>, keeping
+Sparkle's update prompt compact with no changelog pane.
 """
 import argparse
 import re
@@ -59,13 +59,12 @@ def main() -> None:
     p.add_argument("--min-system", required=True, help="minimum macOS, e.g. 26.0")
     p.add_argument("--url", required=True, help="enclosure download URL")
     p.add_argument("--signature", required=True, help="raw sign_update stdout")
-    p.add_argument("--release-notes-link", default=None, help="permalink for <link>")
     p.add_argument(
-        "--release-notes-file",
+        "--item-link",
+        "--release-notes-link",
+        dest="item_link",
         default=None,
-        help="path to an HTML file embedded as the item's <description> (Sparkle's "
-        "What's New pane). Preferred over a releaseNotesLink so the dialog doesn't "
-        "load the GitHub release page and its repo nav chrome.",
+        help="permalink for <link>; not used as Sparkle release notes",
     )
     args = p.parse_args()
 
@@ -88,28 +87,13 @@ def main() -> None:
         if sv is not None and sv.text == args.short_version:
             channel.remove(item)
 
-    notes_html = ""
-    if args.release_notes_file:
-        with open(args.release_notes_file, encoding="utf-8") as fh:
-            notes_html = fh.read().strip()
-
     item = ET.Element("item")
     ET.SubElement(item, "title").text = args.title
-    if args.release_notes_link:
-        # <link> is just the item's permalink (the GitHub release page).
-        ET.SubElement(item, "link").text = args.release_notes_link
-    if notes_html:
-        # Preferred path: embed the release notes as self-contained HTML so the
-        # "What's New" pane shows the changes inline. ElementTree escapes it on
-        # write; Sparkle's XML parser un-escapes it back into HTML for the WebView,
-        # so no CDATA wrapper is needed. (We deliberately do NOT emit a
-        # sparkle:releaseNotesLink here — that would make Sparkle load the GitHub
-        # release page, dragging the whole repo nav into the dialog.)
-        ET.SubElement(item, "description").text = notes_html
-    elif args.release_notes_link:
-        # No embedded notes (empty/failed render) — fall back to pointing Sparkle at
-        # the release page so the update dialog isn't left with a blank notes pane.
-        ET.SubElement(item, f"{{{SPARKLE}}}releaseNotesLink").text = args.release_notes_link
+    if args.item_link:
+        # <link> is just the item's permalink. Sparkle uses <description> and
+        # sparkle:releaseNotesLink for the update dialog's release-notes pane,
+        # so intentionally leave both out.
+        ET.SubElement(item, "link").text = args.item_link
     ET.SubElement(item, f"{{{SPARKLE}}}version").text = args.version
     ET.SubElement(item, f"{{{SPARKLE}}}shortVersionString").text = args.short_version
     ET.SubElement(item, f"{{{SPARKLE}}}minimumSystemVersion").text = args.min_system

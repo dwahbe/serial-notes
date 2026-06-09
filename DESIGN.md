@@ -59,7 +59,7 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
   | Menu bar (recording) | filled orange disc (`Color.recordingLive`) + white bars |
   | Popover header | bare glyph, `.primary` |
   | Meeting-detected banner | filled black disc + white bars |
-  | App icon | glyph on an 824px squircle tile (gradient + shadow) |
+  | App icon | glyph on a full-bleed near-black tile (gradient; macOS rounds + shadows) |
   | Favicon | glyph on a `#0a0a0a` rounded tile |
   | OG card | white glyph, tile-less, on the dark card background |
 
@@ -70,10 +70,18 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
 
 - The brand mark (see above) — a white waveform-in-a-circle — on a near-black tile
   (`#0a0a0a`). Reuses the canonical favicon glyph coordinates verbatim.
-- Source: `icon/AppIcon.svg` (1024×1024). Native macOS treatment: an 824px squircle
-  (~22.4% corners) floated with margin, a subtle top-to-bottom gradient + soft drop
-  shadow for depth, transparent corners. (Menu bar-only app, so it appears in Finder,
-  Spotlight, and the About box rather than the Dock.)
+- Source: `icon/AppIcon.svg` (1024×1024). **Full-bleed** for macOS 26 (Tahoe): the
+  near-black tile (subtle `#1c1c1e → #0a0a0a` top-to-bottom gradient) fills the whole
+  canvas with **no margin and no baked drop shadow** — macOS composites every app icon
+  into its own rounded tile and adds the shadow, so the previous floated-squircle
+  master left a transparent margin that the system tile filled with white (a stray
+  border around the mark). The SVG keeps a light `rx≈180` (≈17.6%, deliberately tighter
+  than Apple's ~22% mask) purely as a fallback shape: under the system mask our squarer
+  corners sit fully covered (no white gap); if the OS ever doesn't mask, the icon still
+  reads as rounded rather than a sharp square. (Menu bar-only app, so it appears in
+  Finder, Spotlight, and the About box rather than the Dock.)
+- The full-bleed master is also the right starting point if we later adopt Apple's
+  **Icon Composer** (`.icon` / Liquid Glass) — the layers are already edge-to-edge.
 - Regenerate the `.icns` with `./icon/make-icon.sh` (built-in tools only:
   `qlmanage` → `sips` → `iconutil`). It writes `Sources/SerialNotes/AppIcon.icns`,
   which `build-app.sh` copies into the bundle (`CFBundleIconFile = AppIcon`).

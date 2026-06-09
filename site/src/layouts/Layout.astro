@@ -10,8 +10,56 @@ interface Props {
 
 const { title = SITE.title, description = SITE.description } = Astro.props;
 
+const siteOrigin = Astro.site ?? SITE.url;
+
+// Per-page canonical instead of a hardcoded homepage URL. Normalize to a trailing
+// slash to match Astro's default `build.format: 'directory'` (pages are served at
+// `/path/`), so a future page's canonical matches its actually-served URL.
+const path = Astro.url.pathname;
+const normalizedPath = path.endsWith("/") ? path : `${path}/`;
+const canonical = new URL(normalizedPath, siteOrigin).href;
+
 // Absolute URL for the build-time-generated social card (see src/pages/og.png.ts).
-const ogImage = new URL("/og.png", Astro.site ?? SITE.url).href;
+const ogImage = new URL("/og.png", siteOrigin).href;
+
+// Structured data: a free macOS SoftwareApplication + the WebSite it lives on.
+// Gives search engines an explicit, rich-result-eligible description of the app
+// (name, platform, $0 price, license). Sourced from SITE so it can't drift.
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${SITE.url}/#website`,
+      url: `${SITE.url}/`,
+      name: SITE.name,
+      description: SITE.description,
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${SITE.url}/#app`,
+      name: SITE.name,
+      description: SITE.description,
+      url: `${SITE.url}/`,
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "macOS",
+      downloadUrl: SITE.download,
+      license: "https://opensource.org/licenses/MIT",
+      isAccessibleForFree: true,
+      offers: {
+        "@type": "Offer",
+        price: "0",
+        priceCurrency: "USD",
+      },
+      author: SITE.authors.map((a) => ({
+        "@type": "Person",
+        name: a.name,
+        url: a.url,
+      })),
+      sameAs: [SITE.github],
+    },
+  ],
+};
 ---
 
 <!doctype html>
@@ -24,14 +72,18 @@ const ogImage = new URL("/og.png", Astro.site ?? SITE.url).href;
 
     <title>{title}</title>
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#ffffff" />
-    <link rel="canonical" href={SITE.url} />
+    <meta name="author" content={SITE.authors.map((a) => a.name).join(", ")} />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <link rel="canonical" href={canonical} />
 
     <!-- Open Graph / Twitter -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:url" content={SITE.url} />
+    <meta property="og:url" content={canonical} />
     <meta property="og:image" content={ogImage} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -40,6 +92,10 @@ const ogImage = new URL("/og.png", Astro.site ?? SITE.url).href;
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
+    <meta name="twitter:image:alt" content={title} />
+
+    <!-- Structured data (schema.org) -->
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
   </head>
   <body class="min-h-screen antialiased">
     <slot />

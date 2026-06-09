@@ -113,12 +113,11 @@ jobs:
             echo "BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"
           } >> "$GITHUB_ENV"
 
-          # Gatekeeper sanity checks (advisory only — notarytool --wait + stapler
-          # already guarantee validity, and `spctl -t open` on a DMG is flaky across
-          # macOS versions, so never fail the release on these).
+          # Gatekeeper sanity checks (advisory — notarytool --wait + stapler already
+          # guarantee validity). `spctl -t open` on a DMG returns non-zero even for a
+          # valid notarized image (wrong assessment context), so validate the stapled
+          # ticket instead — that's the meaningful signal.
           spctl -a -vvv -t execute "$APP" || echo "WARN: app spctl assessment returned non-zero"
-          spctl -a -vvv -t open --context context:primary-signature "$DMG" \
-            || echo "WARN: DMG spctl assessment returned non-zero"
           xcrun stapler validate "$DMG" || echo "WARN: stapler validate returned non-zero"
 
       - name: Publish GitHub Release

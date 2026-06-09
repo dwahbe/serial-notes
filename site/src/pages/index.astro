@@ -24,11 +24,9 @@ import Footer from "../components/Footer.astro";
        backdrop grid: the inset-left paints the box's inner edge from x=144, the
        outset-right sits on the box edge at x=1296. -->
   <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
-    <!-- crosses sit on the frame lines (both grid lines): the left stroke at
-         x=144 (left-0, on the box edge), the right at x=1296 (-right-px, on the
-         outset shadow) -->
-    <span class="cross left-0 top-0"></span>
-    <span class="cross -right-px top-0"></span>
+    <!-- bottom crosses sit on the frame lines (both grid lines): the left stroke
+         at x=144 (left-0, on the box edge), the right at x=1296 (-right-px, on
+         the outset shadow) -->
     <span class="cross bottom-0 left-0"></span>
     <span class="cross bottom-0 -right-px"></span>
 

@@ -99,7 +99,7 @@ On first launch, models are prefetched in the background from Hugging Face (~1 G
 ## Non-Goals
 
 - **Not a notes app.** Exports and gets out of the way.
-- **Not cross-platform.** macOS only by design.
+- **Not a meetings app.** Use any meeting app you prefer.
 
 ## Privacy
 

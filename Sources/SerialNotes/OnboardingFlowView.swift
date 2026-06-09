@@ -77,6 +77,7 @@ struct OnboardingFlowView: View {
             meetingDetector.suspendDetection()
             refreshPermissionState()
         }
+        .background(WindowBringToFront())
         .background(WindowCloseChrome(onClose: handleWindowClose))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Reflect mic + Apple Intelligence changes the user made in System

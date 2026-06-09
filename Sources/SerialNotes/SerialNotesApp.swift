@@ -5,6 +5,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     weak var recordingState: RecordingState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Offer to relocate into /Applications before anything else spins up. If the
+        // user accepts, this relaunches from the new location and never returns.
+        if MoveToApplications.moveIfNeeded() { return }
         NSApp.setActivationPolicy(.accessory)
     }
 
@@ -202,7 +205,9 @@ private struct MenuBarLabel: View {
         .onAppear {
             navigation.openSettingsAction = { openSettings() }
             navigation.openSetupAction = {
-                NSApp.setActivationPolicy(.regular)
+                // Stay `.accessory` (no Dock icon) — WindowBringToFront surfaces the
+                // window via orderFrontRegardless. Keeps the menu-bar app out of the
+                // Dock during first-run setup.
                 NSApp.activate()
                 openWindow(id: onboardingWindowID)
             }

@@ -104,6 +104,35 @@ func restoreAccessoryIfNoOtherTitledWindow(excluding closing: NSWindow?) {
     }
 }
 
+/// Pulls the hosting `NSWindow` above other apps' windows whenever it appears.
+///
+/// A menu-bar-only (`.accessory`) app that auto-opens a `Window` scene at launch
+/// can have that window mounted *behind* whatever app is frontmost: `openWindow`
+/// creates the window on a later runloop turn than the `NSApp.activate()` that
+/// preceded it, so that activation finds no window to raise — and the cooperative
+/// macOS 14+ `activate()` won't lift a fresh window over an already-active app.
+/// Grabbing the window once it actually exists (in `viewDidMoveToWindow`) and
+/// calling `orderFrontRegardless()` is what reliably surfaces the setup guide.
+struct WindowBringToFront: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { BringToFrontView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class BringToFrontView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        // Surface + focus the window WITHOUT flipping to `.regular`. An `.accessory`
+        // (menu-bar-only) app can front a window via `orderFrontRegardless()` — which
+        // is what actually fixes the "mounts behind" problem — so we keep the app out
+        // of the Dock + Cmd-Tab (its no-Dock-icon design) instead of parking a Dock
+        // icon there for the whole setup flow.
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+}
+
 /// Watches the hosting `NSWindow` and runs teardown when it closes: an optional
 /// caller hook (e.g. resume meeting detection) followed by the shared
 /// activation-policy restore. Shared by the Settings window and the setup guide.

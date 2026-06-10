@@ -6,6 +6,11 @@ import SwiftUI
 /// does not need to be suspended around it.
 @MainActor @Observable
 final class ClipPlayer {
+    /// Recognizing a voice takes seconds; cap the preview rather than playing the
+    /// whole extracted clip. The clip *file* stays full length — it doubles as the
+    /// enrollment audio when the speaker is named.
+    static let previewSeconds: Double = 8
+
     private(set) var playingURL: URL?
 
     @ObservationIgnored private var player: AVAudioPlayer?
@@ -24,8 +29,8 @@ final class ClipPlayer {
         playingURL = url
         player.play()
 
-        // No delegate (would need NSObject) — just clear state when the clip ends.
-        let duration = player.duration
+        // No delegate (would need NSObject) — just clear state when the preview ends.
+        let duration = min(player.duration, Self.previewSeconds)
         stopTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(duration + 0.1))
             guard !Task.isCancelled else { return }
@@ -91,7 +96,7 @@ struct SpeakerNamingView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Name the speakers")
                 .font(.title2.weight(.semibold))
-            Text("\(session.title) · \(session.pendingCount) to name")
+            Text(session.title)
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Text("Naming someone teaches Serial Notes their voice so it labels them by name in future meetings, and updates this meeting's transcript.")
@@ -157,9 +162,6 @@ private struct SpeakerNamingRow: View {
                             .italic()
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("\(Int(speaker.totalSpeechSeconds.rounded()))s of speech")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
                 }
                 Spacer(minLength: 0)
             }

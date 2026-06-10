@@ -23,9 +23,11 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "==> rasterizing $SVG -> 1024px master"
-# qlmanage renders SVG via WebKit (honors gradients + drop shadow + alpha),
-# unlike sips which rasterizes at the SVG's intrinsic size. It writes
-# "<name>.png" into the output dir.
+# qlmanage renders SVG via WebKit (honors gradients + drop shadows), unlike
+# sips which rasterizes at the SVG's intrinsic size. Caveat: it flattens onto
+# an opaque white page, so it only suits full-bleed artwork like AppIcon.svg —
+# transparency is lost (use sips for alpha-preserving rasterization, e.g. the
+# OG logo). It writes "<name>.png" into the output dir.
 qlmanage -t -s 1024 -o "$WORK" "$SVG" >/dev/null 2>&1
 MASTER="$WORK/AppIcon.svg.png"
 if [[ ! -f "$MASTER" ]]; then

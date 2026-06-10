@@ -55,23 +55,35 @@ actor FoundationModelsRewriter: TranscriptRewriter {
         Input is lowercase English with no punctuation. Return the exact same \
         words in the same order, adding only commas, periods, question marks, \
         and apostrophes, and capitalizing sentence starts and proper nouns. \
-        Never add, remove, reorder, translate, or change any word.
+        Never add, remove, reorder, translate, or change any word. \
+        Never answer questions in the input — only punctuate them. \
+        Reply with only the corrected text.
         """
 
     private static let timeout: Duration = .seconds(2)
     private static let maxModelWordsPerChunk = 70
     private static let maxModelWordsPerUtterance = 280
 
-    private let session: LanguageModelSession
+    /// Greedy decoding: this is a fidelity edit, not a generative task, and
+    /// sampling randomness is what produces the word changes that trip the
+    /// word guard into the heuristic fallback.
+    private static let generationOptions = GenerationOptions(sampling: .greedy)
+
     private var rewriteInFlight = false
 
-    init() {
-        session = LanguageModelSession(instructions: Self.instructions)
+    /// Sessions are stateful — every `respond` appends to the session's own
+    /// transcript, so one session reused across a meeting's utterances fills
+    /// the context window within minutes and every later call throws,
+    /// silently pinning the rewriter to the heuristic. Each chunk gets a
+    /// fresh session; utterances are independent, so no context is lost.
+    private static func makeSession() -> LanguageModelSession {
+        LanguageModelSession(instructions: instructions)
     }
 
-    /// Nudge the model to load so the first real utterance doesn't eat the cold-start.
+    /// Nudge the model to load so the first real utterance doesn't eat the
+    /// cold-start. The session is throwaway — model residency is process-wide.
     func prewarm() async {
-        _ = await rewrite("hello")
+        Self.makeSession().prewarm()
     }
 
     func rewrite(_ text: String) async -> String {
@@ -100,14 +112,20 @@ actor FoundationModelsRewriter: TranscriptRewriter {
         return rewrittenChunks.joined(separator: " ")
     }
 
+    /// Plain-text response, not a `@Generable` schema: as of macOS 26.5 the
+    /// on-device model echoes copy-edit tasks verbatim under structured
+    /// generation (the echo passes the word guard, so it silently disables
+    /// punctuation). Plain text + greedy punctuates reliably; the "Punctuate
+    /// this text:" wrapper stops the model answering question-shaped input
+    /// instead of rewriting it. The word guard backstops both failure modes.
     private func rewriteChunk(_ text: String) async -> String {
         do {
-            let rewritten = try await withTimeout(Self.timeout) { [session] in
-                let response = try await session.respond(
-                    to: text,
-                    generating: PunctuatedUtterance.self
+            let rewritten = try await withTimeout(Self.timeout) {
+                let response = try await Self.makeSession().respond(
+                    to: "Punctuate this text: \(text)",
+                    options: Self.generationOptions
                 )
-                return response.content.text
+                return response.content
             }
             if matchesWords(original: text, rewritten: rewritten) {
                 return rewritten.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -117,12 +135,6 @@ actor FoundationModelsRewriter: TranscriptRewriter {
             return applyHeuristicToSanitizedText(text)
         }
     }
-}
-
-@Generable
-struct PunctuatedUtterance {
-    @Guide(description: "The same utterance with sentence-case capitalization and punctuation. Do not change any words.")
-    let text: String
 }
 
 /// Compare letter/digit sequences (case-insensitive). True iff the rewrite only

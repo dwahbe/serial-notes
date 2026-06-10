@@ -79,6 +79,46 @@ struct TranscriptSummarizerTests {
         }
     }
 
+    @Test("Token-derived chunk words: scales budget by measured word density")
+    func tokenDerivedChunkWordsScaling() {
+        // 6000 words measured at 9000 tokens → 1.5 tokens/word. A 3072-token
+        // budget at 0.9 safety should cap chunks at 3072 / 1.5 * 0.9 = 1843.
+        let words = SummarizerTextProcessing.tokenDerivedChunkWords(
+            bodyTokens: 9000,
+            wordCount: 6000,
+            inputTokenBudget: 3072,
+            safetyFactor: 0.9,
+            minWords: 200
+        )
+        #expect(words == 1843)
+    }
+
+    @Test("Token-derived chunk words: clamps to the minimum")
+    func tokenDerivedChunkWordsMinimum() {
+        let words = SummarizerTextProcessing.tokenDerivedChunkWords(
+            bodyTokens: 10000,
+            wordCount: 1000,
+            inputTokenBudget: 500,
+            safetyFactor: 0.9,
+            minWords: 200
+        )
+        #expect(words == 200)
+    }
+
+    @Test("Token-derived chunk words: degenerate inputs return the minimum")
+    func tokenDerivedChunkWordsDegenerate() {
+        for (tokens, count, budget) in [(0, 100, 3072), (100, 0, 3072), (100, 100, 0)] {
+            let words = SummarizerTextProcessing.tokenDerivedChunkWords(
+                bodyTokens: tokens,
+                wordCount: count,
+                inputTokenBudget: budget,
+                safetyFactor: 0.9,
+                minWords: 200
+            )
+            #expect(words == 200)
+        }
+    }
+
     @Test("Fake summarizer: respects per-section flags")
     func fakeSummarizerFlags() async {
         let summarizer = FakeSummarizer(

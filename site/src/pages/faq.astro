@@ -1,0 +1,134 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Cta from "../components/Cta.astro";
+import Footer from "../components/Footer.astro";
+import { SITE } from "../consts";
+
+// One array drives both the rendered page and the FAQPage JSON-LD, so the
+// structured data can never drift from what's on screen. Answers may contain
+// minimal inline HTML (links, mono spans); the JSON-LD strips tags.
+const faqs: { q: string; a: string }[] = [
+  {
+    q: "Is Serial Notes really free?",
+    a: `Yes — free and open source under the MIT license, with no tiers, caps, accounts, or upsells. The full source is on <a href="${SITE.github}" target="_blank" rel="noopener noreferrer" class="faq-link">GitHub</a>.`,
+  },
+  {
+    q: "Does my audio or transcript ever leave my Mac?",
+    a: "No. Recording, transcription, speaker labeling, and summaries all run on-device. Nothing is uploaded and there's no telemetry. The app touches the network only to download its speech models on first launch and to check for updates.",
+  },
+  {
+    q: "Does a bot join my meetings?",
+    a: "No. Serial Notes captures your Mac's audio directly — nothing joins the call, and other participants see nothing in their attendee list.",
+  },
+  {
+    q: "Which meeting apps does it work with?",
+    a: `Serial Notes auto-detects calls in Zoom, Microsoft Teams, FaceTime, Slack, Webex, and Discord and offers one-click recording. For anything else — including browser meetings like Google Meet — just start recording from the menu bar: it captures any audio your Mac plays.`,
+  },
+  {
+    q: "Does it work offline?",
+    a: "Yes. After a one-time download of the speech models on first launch, everything runs locally — you can record, transcribe, and summarize with no connection at all.",
+  },
+  {
+    q: "What does it require?",
+    a: "An Apple Silicon Mac running macOS 26 (Tahoe) or later. Summaries and action items additionally need Apple Intelligence enabled; transcription works without it.",
+  },
+  {
+    q: "How do summaries and action items work?",
+    a: "When a meeting ends, Apple Intelligence — Apple's on-device models, not a cloud service — drafts a short summary and a checklist of action items with owners. If Apple Intelligence is off, you still get the full transcript; Serial Notes never fabricates a summary by other means.",
+  },
+  {
+    q: "Where are my notes saved?",
+    a: `Each meeting becomes one Markdown file in a folder you choose — an Obsidian vault, an iCloud folder, anywhere. By default the audio recordings are deleted once transcription finishes, so only the transcript remains; you can opt to keep the audio in Settings.`,
+  },
+  {
+    q: "Can it tell who said what?",
+    a: "Yes. Speakers are separated automatically on-device. You can enroll your own voice so you're labeled by name, and name the other speakers after the meeting — future transcripts then recognize them.",
+  },
+  {
+    q: "How do I get my notes into Notion, Obsidian, or Apple Notes?",
+    a: `Notes are plain <span class="font-mono text-[14px]">.md</span> files, so Obsidian and Logseq can read the folder directly and Notion imports them as-is. Serial Notes can also push each finished transcript straight into Apple Notes or Bear automatically.`,
+  },
+  {
+    q: "Should I tell people I'm recording?",
+    a: "We recommend it. Consent rules for recording conversations vary by region, and in many places everyone on the call must agree — telling people up front is both polite and safe.",
+  },
+  {
+    q: "Is the app safe to install?",
+    a: `Yes. Builds are signed with an Apple Developer ID and notarized by Apple, and updates arrive through the same signed channel. Since the project is open source, you can also audit the code or build it yourself.`,
+  },
+];
+
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqs.map(({ q, a }) => ({
+    "@type": "Question",
+    name: q,
+    acceptedAnswer: { "@type": "Answer", text: a.replace(/<[^>]*>/g, "") },
+  })),
+};
+
+const title = "Serial Notes FAQ — privacy, offline use, and requirements";
+const description =
+  "Answers about Serial Notes: how on-device transcription keeps meeting audio private, which meeting apps it works with, offline use, Mac requirements, and where notes are saved.";
+---
+
+<Layout title={title} description={description}>
+  <script slot="head" type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} is:inline />
+
+  <Nav />
+
+  <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
+    <span class="cross bottom-0 left-0"></span>
+    <span class="cross bottom-0 -right-px"></span>
+
+    <section class="px-5 pb-16 pt-14 sm:px-8 sm:pb-20 sm:pt-20">
+      <div class="max-w-2xl">
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">FAQ</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          Frequently asked questions
+        </h1>
+        <p class="mt-5 max-w-xl text-pretty text-[17px] leading-relaxed text-muted">
+          Everything people ask about how Serial Notes records, transcribes,
+          and keeps your meetings private. Something missing? <a
+            href={`${SITE.github}/issues`}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="faq-link">Open an issue</a
+          > or email <a href={`mailto:${SITE.email}`} class="faq-link">{SITE.email}</a
+          > and we'll answer it.
+        </p>
+      </div>
+
+      <div class="mt-12 max-w-2xl">
+        {
+          faqs.map(({ q, a }) => (
+            <div class="border-t border-line py-7 first:border-t-0 first:pt-0">
+              <h2 class="text-[19px] font-semibold tracking-tight text-ink">{q}</h2>
+              <p class="mt-3 text-pretty text-[15.5px] leading-relaxed text-muted" set:html={a} />
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <Cta />
+  </main>
+
+  <Footer />
+</Layout>
+
+<style is:global>
+  .faq-link {
+    color: var(--color-ink);
+    font-weight: 500;
+    text-decoration: underline;
+    text-decoration-color: var(--color-line);
+    text-underline-offset: 3px;
+    transition: text-decoration-color 0.15s ease;
+  }
+  .faq-link:hover {
+    text-decoration-color: var(--color-faint);
+  }
+</style>

@@ -2,12 +2,12 @@ import type { APIRoute } from "astro";
 import { SITE } from "../consts";
 
 // Build-time only: prerenders to a static /sitemap.xml. Hand-rolled (no
-// @astrojs/sitemap dependency) since the site is a single page; add paths to
-// `routes` when more pages land. Loc is built from SITE.url for one source of
-// truth, matching robots.txt.ts.
+// @astrojs/sitemap dependency) since the site is a handful of pages; add paths
+// to `routes` when more pages land. Loc is built from SITE.url for one source
+// of truth, matching robots.txt.ts.
 export const prerender = true;
 
-const routes = [""]; // root only — "" → SITE.url + "/"
+const routes = ["", "compare", "faq"]; // "" → SITE.url + "/"
 
 export const GET: APIRoute = () => {
   const urls = routes

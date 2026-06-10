@@ -1,0 +1,138 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import ComparisonTable from "../components/ComparisonTable.astro";
+import Cta from "../components/Cta.astro";
+import Footer from "../components/Footer.astro";
+
+// The deep version of the homepage "How it compares" section: the same shared
+// table plus per-competitor prose, targeting "Granola/Otter/Fathom alternative"
+// searches. Facts must stay in lockstep with ComparisonTable.astro — when a
+// competitor fact changes, update the table data and this prose together.
+const title = "Serial Notes vs Granola, Otter & Fathom — a free, private alternative";
+const description =
+  "How Serial Notes compares to Granola, Otter.ai, and Fathom: a free, open-source meeting notes app for Mac that transcribes on-device, works offline, and saves plain Markdown.";
+---
+
+<Layout title={title} description={description}>
+  <Nav />
+
+  <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
+    <span class="cross bottom-0 left-0"></span>
+    <span class="cross bottom-0 -right-px"></span>
+
+    <section class="px-5 pb-16 pt-14 sm:px-8 sm:pb-20 sm:pt-20">
+      <div class="max-w-2xl">
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">How it compares</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          Serial Notes vs Granola, Otter, and Fathom
+        </h1>
+        <p class="mt-5 max-w-xl text-pretty text-[17px] leading-relaxed text-muted">
+          They're all good tools — but they're cloud subscriptions. Serial Notes
+          is a free, open-source Mac app that records, transcribes, and
+          summarizes meetings entirely on your machine, then saves a plain
+          Markdown file you own outright.
+        </p>
+      </div>
+
+      <div class="mt-10 sm:mt-12">
+        <ComparisonTable />
+      </div>
+    </section>
+
+    <section id="granola" class="border-t border-line px-5 py-14 sm:px-8 sm:py-16">
+      <div class="max-w-2xl">
+        <h2 class="tracking-tightest text-balance text-2xl font-semibold leading-tight text-ink sm:text-3xl">
+          Serial Notes vs Granola
+        </h2>
+        <div class="mt-5 space-y-4 text-pretty text-[16px] leading-relaxed text-muted">
+          <p>
+            Granola is the closest tool in spirit: a polished Mac app that
+            records from your computer's audio without sending a bot into the
+            call. The difference is what happens next. Granola enhances its
+            notes with cloud AI, so your transcript leaves your machine and the
+            app needs a connection and an account. Its free tier covers 25
+            meetings total, then it's a subscription.
+          </p>
+          <p>
+            Serial Notes keeps the entire pipeline — recording, transcription,
+            speaker labels, summaries — on your Mac. It works offline, needs no
+            account, and every meeting lands as a plain <span class="font-mono text-[14px]">.md</span>
+            file in a folder you choose, readable in any editor. It's also open
+            source, so you can verify all of that rather than take our word for
+            it.
+          </p>
+          <p>
+            If you want AI-polished prose notes and don't mind the cloud,
+            Granola is a fine choice. If you want your meetings to stay on your
+            machine — and your notes to outlive any app — that's what Serial
+            Notes is built for.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="otter" class="border-t border-line px-5 py-14 sm:px-8 sm:py-16">
+      <div class="max-w-2xl">
+        <h2 class="tracking-tightest text-balance text-2xl font-semibold leading-tight text-ink sm:text-3xl">
+          Serial Notes vs Otter.ai
+        </h2>
+        <div class="mt-5 space-y-4 text-pretty text-[16px] leading-relaxed text-muted">
+          <p>
+            Otter is the veteran of cloud transcription, with mobile apps,
+            real-time collaboration, and team workspaces. It's built around its
+            cloud: audio is transcribed on Otter's servers, an "Otter
+            Assistant" bot joins your calls by default, and the free tier caps
+            you at 300 transcription minutes per month.
+          </p>
+          <p>
+            Serial Notes takes the opposite approach. Nothing joins your call
+            and nothing is uploaded — your Mac does the transcription itself,
+            with automatic speaker labels, for unlimited meetings at no cost.
+            Notes are local Markdown files instead of documents living in
+            someone else's web app.
+          </p>
+          <p>
+            If you need shared team transcripts on every platform, Otter has
+            features Serial Notes doesn't. If your meetings happen on a Mac and
+            you'd rather they stay there, Serial Notes does the job without the
+            bot, the account, or the meter.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="fathom" class="border-t border-line px-5 py-14 sm:px-8 sm:py-16">
+      <div class="max-w-2xl">
+        <h2 class="tracking-tightest text-balance text-2xl font-semibold leading-tight text-ink sm:text-3xl">
+          Serial Notes vs Fathom
+        </h2>
+        <div class="mt-5 space-y-4 text-pretty text-[16px] leading-relaxed text-muted">
+          <p>
+            Fathom is aimed squarely at sales and customer teams: a bot joins
+            the call, recordings live in Fathom's cloud, and highlights sync
+            into your CRM. Recording is free without limits, but AI summaries
+            are capped at five per month before the subscription kicks in.
+          </p>
+          <p>
+            Serial Notes has no bot, no cloud, and no cap — summaries and
+            action items are generated on-device by Apple Intelligence for
+            every meeting. There's no CRM integration, by design: you get a
+            clean Markdown file that flows into whatever system you already
+            use, from Notion to Obsidian to plain folders.
+          </p>
+          <p>
+            If your workflow is pipeline reviews and call libraries shared
+            across a revenue team, Fathom fits that shape. If you want private,
+            permanent notes from every meeting you attend, Serial Notes is the
+            simpler, freer answer.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <Cta />
+  </main>
+
+  <Footer />
+</Layout>

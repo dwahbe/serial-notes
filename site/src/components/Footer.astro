@@ -19,8 +19,11 @@ import { SITE } from "../consts";
     </div>
 
     <nav class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-muted">
+      <a href="/compare/" class="transition-colors hover:text-ink">Compare</a>
+      <a href="/faq/" class="transition-colors hover:text-ink">FAQ</a>
       <a href={SITE.download} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-ink">Download</a>
       <a href={SITE.github} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-ink">GitHub</a>
+      <a href={`mailto:${SITE.email}`} class="transition-colors hover:text-ink">Contact</a>
     </nav>
   </div>
 </footer>

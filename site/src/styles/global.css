@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+/* ── Webfonts ──────────────────────────────────────────────────
+   Geist + Geist Mono, self-hosted variable woff2 (Vercel's recommended
+   route for non-Next projects — full glyph set, no third-party request).
+   Files + OFL license live in public/fonts; Layout.astro preloads both. */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/GeistVF.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMonoVF.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ── Design tokens ─────────────────────────────────────────────
    Vercel-inspired: pure white, near-black ink, hairline grays. */
 @theme {

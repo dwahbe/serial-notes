@@ -16,8 +16,8 @@ final class MeetingAudioActivityMonitor {
     /// some meeting apps (notably Zoom): the "became active" or "became inactive"
     /// callback is sometimes never delivered, which would otherwise leave the
     /// call-end machine stuck in `monitoring` forever. Polling re-derives the
-    /// truth so a dropped notification can't wedge auto-stop. 3s is well inside
-    /// the 10s inactive grace, so a missed transition still surfaces promptly.
+    /// truth so a dropped notification can't wedge auto-stop: a missed transition
+    /// surfaces within one poll, then the state machine's inactive grace runs.
     private let pollInterval: Duration = .seconds(3)
 
     func startMonitoring(association: MeetingRecordingAssociation) {

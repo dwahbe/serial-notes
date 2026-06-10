@@ -161,7 +161,7 @@ struct SerialNotesApp: App {
 
     /// Bring the Settings window to the front from non-view code (the post-meeting
     /// prompt). Mirrors `MenuBarView.showSettings` / `StorageSettings.pickFolder`: flip
-    /// to `.regular`, activate, open. `SettingsWindowChrome` restores `.accessory` on close.
+    /// to `.regular`, activate, open. `WindowCloseChrome` restores `.accessory` on close.
     @MainActor
     static func openSettings(navigation: SettingsNavigation) {
         NSApp.setActivationPolicy(.regular)

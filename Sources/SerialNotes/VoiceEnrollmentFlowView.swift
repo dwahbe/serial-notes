@@ -64,8 +64,6 @@ struct VoiceEnrollmentFlowView: View {
         }
     }
 
-    // MARK: - Step derivation
-
     // MARK: - Actions
 
     private func startCapture() {

@@ -34,8 +34,6 @@ struct NotesDestination: Identifiable {
     /// Shown as a disabled "Coming soon" teaser rather than a working destination —
     /// e.g. Notion, whose direct integration needs the OAuth work in Phase 3.
     var comingSoon: Bool = false
-
-    var isApp: Bool { kind == .folderApp || kind == .importApp }
 }
 
 // MARK: - Catalog

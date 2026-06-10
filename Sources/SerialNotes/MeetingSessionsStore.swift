@@ -15,7 +15,6 @@ struct MeetingSession: Identifiable {
     var id: URL { directory }
     var startedAt: Date { sidecar.sessionStartedAt }
 
-    var allSpeakers: [DetectedSpeaker] { sidecar.speakers }
     /// Pending speakers whose clip still exists — what the naming UI offers.
     var nameableSpeakers: [DetectedSpeaker] { sidecar.speakers.filter { nameableIndices.contains($0.speakerIndex) } }
     var namedSpeakers: [DetectedSpeaker] { sidecar.speakers.filter { $0.state == .named } }

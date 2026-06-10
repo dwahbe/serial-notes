@@ -133,10 +133,9 @@ struct OnboardingFlowView: View {
                 ("lock.shield", "Your recordings never leave your Mac."),
                 ("menubar.rectangle", "Lives quietly in your menu bar."),
                 ("sparkles", "Transcribes and summarizes on-device."),
-            ]
-        ) {
-            primaryButton("Get Started") { advance() }
-        }
+            ],
+            primary: PrimaryAction("Get Started") { advance() }
+        )
     }
 
     private var microphoneStep: some View {
@@ -147,15 +146,17 @@ struct OnboardingFlowView: View {
                 glyphColor: micGranted ? .green : .accentColor
             ),
             title: "Allow microphone access",
-            subtitle: "Serial Notes records your microphone so your own voice is part of the transcript."
-        ) {
-            permissionFooter(
-                granted: micGranted,
-                grantTitle: "Allow Microphone Access",
-                onGrant: requestMicrophone,
-                settingsCandidates: ["x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"]
-            )
-        }
+            subtitle: "Serial Notes records your microphone so your own voice is part of the transcript.",
+            primary: micGranted
+                ? PrimaryAction("Continue", action: { advance() })
+                : PrimaryAction("Allow Microphone Access", action: requestMicrophone),
+            utilityRow: {
+                permissionUtilityRow(
+                    granted: micGranted,
+                    settingsCandidates: ["x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"]
+                )
+            }
+        )
     }
 
     private var systemAudioStep: some View {
@@ -166,15 +167,17 @@ struct OnboardingFlowView: View {
                 glyphColor: systemAudioGranted ? .green : .accentColor
             ),
             title: "Allow system audio recording",
-            subtitle: "This lets Serial Notes hear the other side of your calls — the people you're meeting with."
-        ) {
-            permissionFooter(
-                granted: systemAudioGranted,
-                grantTitle: "Allow System Audio Recording",
-                onGrant: requestSystemAudio,
-                settingsCandidates: ["x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]
-            )
-        }
+            subtitle: "This lets Serial Notes hear the other side of your calls — the people you're meeting with.",
+            primary: systemAudioGranted
+                ? PrimaryAction("Continue", action: { advance() })
+                : PrimaryAction("Allow System Audio Recording", action: requestSystemAudio),
+            utilityRow: {
+                permissionUtilityRow(
+                    granted: systemAudioGranted,
+                    settingsCandidates: ["x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]
+                )
+            }
+        )
     }
 
     private var appleIntelligenceStep: some View {
@@ -187,22 +190,21 @@ struct OnboardingFlowView: View {
             title: aiAvailable ? "Summaries are ready" : "Turn on Apple Intelligence",
             subtitle: aiAvailable
                 ? "Apple Intelligence will add a summary and action items to each transcript — and tidy up punctuation. All on-device."
-                : "Optional. With Apple Intelligence, Serial Notes adds a summary and action items to every transcript and cleans up punctuation. Everything stays on your Mac."
-        ) {
-            if aiAvailable {
-                primaryButton("Continue") { advance() }
-            } else {
-                VStack(spacing: 12) {
-                    primaryButton("Open Apple Intelligence Settings") {
-                        openSystemSettings([
-                            "x-apple.systempreferences:com.apple.Apple-Intelligence-Settings.extension",
-                            "x-apple.systempreferences:com.apple.preference.security",
-                        ])
-                    }
+                : "Optional. With Apple Intelligence, Serial Notes adds a summary and action items to every transcript and cleans up punctuation. Everything stays on your Mac.",
+            primary: aiAvailable
+                ? PrimaryAction("Continue", action: { advance() })
+                : PrimaryAction("Open Apple Intelligence Settings", action: {
+                    openSystemSettings([
+                        "x-apple.systempreferences:com.apple.Apple-Intelligence-Settings.extension",
+                        "x-apple.systempreferences:com.apple.preference.security",
+                    ])
+                }),
+            utilityRow: {
+                if !aiAvailable {
                     skipButton("Skip for now") { advance() }
                 }
             }
-        }
+        )
     }
 
     private var storageStep: some View {
@@ -217,37 +219,46 @@ struct OnboardingFlowView: View {
             title: storageConfirmation == nil ? "Where should notes go?" : "Saved",
             subtitle: storageConfirmation == nil
                 ? "Each meeting saves a Markdown transcript. Pick a home for them — Serial Notes makes the folder for you."
-                : "You can change this anytime in Settings."
-        ) {
-            if let confirmation = storageConfirmation {
-                storageConfirmationFooter(confirmation)
-            } else {
-                storagePickerFooter
-            }
-        }
-    }
-
-    private var storagePickerFooter: some View {
-        VStack(spacing: 16) {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 78), spacing: 12)],
-                alignment: .center,
-                spacing: 12
-            ) {
-                ForEach(NotesDestination.availableApps + NotesDestination.locations) { dest in
-                    DestinationTile(destination: dest) { choose(dest) }
+                : "You can change this anytime in Settings.",
+            primary: storageConfirmation == nil
+                ? nil
+                : PrimaryAction("Continue", action: { advance() }),
+            extra: {
+                if let confirmation = storageConfirmation {
+                    storageConfirmationDetails(confirmation)
+                } else {
+                    destinationGrid
+                }
+            },
+            utilityRow: {
+                if storageConfirmation == nil {
+                    HStack(spacing: 16) {
+                        Button("Choose a folder…", action: chooseCustomStorage)
+                            .buttonStyle(.link)
+                        skipButton("Skip for now") { advance() }
+                    }
+                } else {
+                    Button("Pick a different place") { storageConfirmation = nil }
+                        .buttonStyle(.link)
                 }
             }
-            VStack(spacing: 8) {
-                Button("Choose a folder…", action: chooseCustomStorage)
-                    .buttonStyle(.link)
-                    .font(.callout)
-                skipButton("Skip for now") { advance() }
-            }
-        }
+        )
     }
 
-    private func storageConfirmationFooter(_ confirmation: StorageConfirmation) -> some View {
+    private var destinationGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 78), spacing: 12)],
+            alignment: .center,
+            spacing: 12
+        ) {
+            ForEach(NotesDestination.availableApps + NotesDestination.locations) { dest in
+                DestinationTile(destination: dest) { choose(dest) }
+            }
+        }
+        .padding(.horizontal, 40)
+    }
+
+    private func storageConfirmationDetails(_ confirmation: StorageConfirmation) -> some View {
         VStack(spacing: 14) {
             Text(confirmation.message)
                 .font(.body)
@@ -262,10 +273,6 @@ struct OnboardingFlowView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 360)
             }
-            primaryButton("Continue") { advance() }
-            Button("Pick a different place") { storageConfirmation = nil }
-                .buttonStyle(.link)
-                .font(.callout)
         }
     }
 
@@ -273,13 +280,12 @@ struct OnboardingFlowView: View {
         OnboardingStepScaffold(
             icon: SetupStepIcon(systemName: "person.wave.2"),
             title: "Get recognized by name",
-            subtitle: "Read three short phrases so Serial Notes can label you by name instead of “You” in transcripts. Optional — you can do this later in Settings."
-        ) {
-            VStack(spacing: 12) {
-                primaryButton("Set Up Voice") { showingEnrollment = true }
+            subtitle: "Read three short phrases so Serial Notes can label you by name instead of “You” in transcripts. Optional — you can do this later in Settings.",
+            primary: PrimaryAction("Set Up Voice") { showingEnrollment = true },
+            utilityRow: {
                 skipButton("Skip for now") { advance() }
             }
-        }
+        )
     }
 
     private var doneStep: some View {
@@ -300,53 +306,32 @@ struct OnboardingFlowView: View {
                 ("waveform.circle", "Detects calls and offers to record."),
                 ("doc.text", "Saves a Markdown transcript per meeting."),
                 ("gearshape", "Adjust anything in Settings."),
-            ]
-        ) {
-            primaryButton("Done") {
+            ],
+            primary: PrimaryAction("Done") {
                 onboarding.markCompleted()
                 close()
             }
-        }
+        )
     }
 
-    // MARK: - Footer builders
+    // MARK: - Step pieces
 
+    /// The utility row for a permission step: System Settings + Skip links while
+    /// undecided, a green "Granted" tick once allowed. Swapping content within
+    /// the row (instead of stacking a label above the button) is what keeps the
+    /// primary button from moving when the grant lands.
     @ViewBuilder
-    private func permissionFooter(
-        granted: Bool,
-        grantTitle: String,
-        onGrant: @escaping () -> Void,
-        settingsCandidates: [String]
-    ) -> some View {
+    private func permissionUtilityRow(granted: Bool, settingsCandidates: [String]) -> some View {
         if granted {
-            VStack(spacing: 12) {
-                Label("Granted", systemImage: "checkmark.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.green)
-                primaryButton("Continue") { advance() }
-            }
+            Label("Granted", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
         } else {
-            VStack(spacing: 12) {
-                primaryButton(grantTitle, action: onGrant)
-                HStack(spacing: 16) {
-                    Button("Open System Settings") { openSystemSettings(settingsCandidates) }
-                        .buttonStyle(.link)
-                    skipButton("Skip") { advance() }
-                }
-                .font(.callout)
+            HStack(spacing: 16) {
+                Button("Open System Settings") { openSystemSettings(settingsCandidates) }
+                    .buttonStyle(.link)
+                skipButton("Skip") { advance() }
             }
         }
-    }
-
-    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .keyboardShortcut(.defaultAction)
     }
 
     private func skipButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -464,47 +449,146 @@ struct OnboardingFlowView: View {
 
 // MARK: - Step scaffold
 
-/// Shared vertical layout for an onboarding step: icon, title, subtitle, optional
-/// bullets, then a caller-provided footer. Matches `VoiceEnrollmentFlowView`'s
-/// step layout.
-private struct OnboardingStepScaffold<Footer: View>: View {
+/// The bottom-pinned call to action for a step.
+private struct PrimaryAction {
+    let title: String
+    let action: () -> Void
+
+    init(_ title: String, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+}
+
+/// Shared vertical layout for an onboarding step. Icon, title, subtitle, and
+/// optional bullets / `extra` content center in the flexible zone; below them
+/// sits a footer whose geometry is identical on every step and in every state —
+/// a reserved primary-button slot over a fixed-height utility row (links / skip
+/// / status). Steps express state changes by swapping content *within* those
+/// slots (the button retitles, links become a "Granted" tick), never by adding
+/// or removing rows — so the primary button never shifts as the user moves
+/// through the guide.
+private struct OnboardingStepScaffold<Extra: View, UtilityRow: View>: View {
     let icon: SetupStepIcon
     let title: String
     let subtitle: String
-    var bullets: [(icon: String, text: String)] = []
-    @ViewBuilder var footer: () -> Footer
+    let bullets: [(icon: String, text: String)]
+    /// `nil` leaves the primary slot empty but still reserved — e.g. the storage
+    /// step while a destination is being chosen.
+    let primary: PrimaryAction?
+    /// Step-specific content rendered under the text block (tile grid,
+    /// confirmation copy) — part of the centered zone, not the footer.
+    let extra: () -> Extra
+    /// Content for the footer's utility row. The row keeps its height even when
+    /// this is empty.
+    let utilityRow: () -> UtilityRow
+
+    init(
+        icon: SetupStepIcon,
+        title: String,
+        subtitle: String,
+        bullets: [(icon: String, text: String)] = [],
+        primary: PrimaryAction? = nil,
+        @ViewBuilder extra: @escaping () -> Extra,
+        @ViewBuilder utilityRow: @escaping () -> UtilityRow
+    ) {
+        self.icon = icon
+        self.title = title
+        self.subtitle = subtitle
+        self.bullets = bullets
+        self.primary = primary
+        self.extra = extra
+        self.utilityRow = utilityRow
+    }
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        VStack(spacing: 0) {
+            VStack(spacing: 24) {
+                icon
 
-            icon
+                VStack(spacing: 12) {
+                    Text(title)
+                        .font(.title2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                    Text(subtitle)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 360)
+                }
+
+                if !bullets.isEmpty {
+                    BulletList(items: bullets)
+                        .padding(.horizontal, 40)
+                }
+
+                extra()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             VStack(spacing: 12) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                Text(subtitle)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 360)
+                ZStack {
+                    // Invisible metrics donor: holds the slot at exact button
+                    // height even when a step has no primary action.
+                    primaryButton("Continue", action: {})
+                        .hidden()
+                    if let primary {
+                        primaryButton(primary.title, action: primary.action)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+                ZStack {
+                    utilityRow()
+                        .font(.callout)
+                }
+                .frame(height: 20)
             }
-
-            if !bullets.isEmpty {
-                BulletList(items: bullets)
-                    .padding(.horizontal, 40)
-            }
-
-            Spacer()
-
-            footer()
-                .padding(.horizontal, 40)
-
-            Spacer(minLength: 0)
+            .padding(.horizontal, 40)
         }
         .padding(.top, 16)
+        .padding(.bottom, 24)
+    }
+
+    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+}
+
+extension OnboardingStepScaffold where Extra == EmptyView {
+    init(
+        icon: SetupStepIcon,
+        title: String,
+        subtitle: String,
+        bullets: [(icon: String, text: String)] = [],
+        primary: PrimaryAction? = nil,
+        @ViewBuilder utilityRow: @escaping () -> UtilityRow
+    ) {
+        self.init(
+            icon: icon, title: title, subtitle: subtitle, bullets: bullets,
+            primary: primary, extra: { EmptyView() }, utilityRow: utilityRow
+        )
+    }
+}
+
+extension OnboardingStepScaffold where Extra == EmptyView, UtilityRow == EmptyView {
+    init(
+        icon: SetupStepIcon,
+        title: String,
+        subtitle: String,
+        bullets: [(icon: String, text: String)] = [],
+        primary: PrimaryAction? = nil
+    ) {
+        self.init(
+            icon: icon, title: title, subtitle: subtitle, bullets: bullets,
+            primary: primary, extra: { EmptyView() }, utilityRow: { EmptyView() }
+        )
     }
 }
 

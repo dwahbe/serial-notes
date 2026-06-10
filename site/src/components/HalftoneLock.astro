@@ -60,8 +60,12 @@ function cov(sd: number) {
 
 type Dot = { x: number; y: number; r: number };
 const dots: Dot[] = [];
+// Columns must mirror about the lock's axis (cx), or left/right sample pairs
+// see different distances and the halftone goes lopsided (uneven keyhole
+// columns, stray edge dots). Offset the grid so columns straddle cx exactly.
+const gx0 = (((cx - step / 2) % step) + step) % step;
 for (let gy = step / 2; gy < H; gy += step) {
-  for (let gx = step / 2; gx < W; gx += step) {
+  for (let gx = gx0; gx < W; gx += step) {
     const lock = Math.min(
       sdRoundRect(gx, gy, bodyCx, bodyCy, bodyHW, bodyHH, bodyR),
       sdShackle(gx, gy),

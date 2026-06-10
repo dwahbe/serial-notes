@@ -518,8 +518,17 @@ private struct GeneralSettingsTab: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Button("Check for Updates…") { updater.checkForUpdates() }
-                    .disabled(!updater.canCheckForUpdates)
+                if updater.updatesDisabledForDevBuild {
+                    HStack {
+                        Text("Updates")
+                        Spacer()
+                        Text("Disabled in dev builds")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Check for Updates…") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                }
                 Button("Show Setup Guide…", action: showSetupGuide)
                     // The guide drives audio permissions + voice enrollment, which
                     // conflict with a live capture — block re-entry while recording.

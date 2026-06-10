@@ -14,6 +14,14 @@ import SwiftUI
 @MainActor
 @Observable
 final class UpdaterController {
+    /// Dev builds never self-update: they read the same production appcast, so an
+    /// accepted update would overwrite `.build/SerialNotes.app` in place with the
+    /// notarized production build — silently converting the dev flavor into a
+    /// production copy (this happened after v0.1.4). The updater is never started,
+    /// so neither scheduled nor manual checks can run; About shows why instead of
+    /// the check button.
+    let updatesDisabledForDevBuild: Bool
+
     private(set) var canCheckForUpdates = false
 
     @ObservationIgnored private let updater: SPUUpdater
@@ -38,6 +46,11 @@ final class UpdaterController {
         self.userDriver = userDriver
         self.updater = updater
         self.observation = nil
+        self.updatesDisabledForDevBuild = host.isDevBuild
+
+        // An unstarted updater schedules nothing and `canCheckForUpdates` stays
+        // false, so leaving it unstarted is the whole dev-build gate.
+        guard !updatesDisabledForDevBuild else { return }
 
         // `SPUStandardUpdaterController(startingUpdater: true)` did this for us;
         // building the updater by hand means we start it ourselves.
@@ -62,6 +75,9 @@ final class UpdaterController {
     }
 
     func checkForUpdates() {
+        // Checking an unstarted updater is a Sparkle API violation; the About
+        // button never reaches here in dev builds, but guard regardless.
+        guard !updatesDisabledForDevBuild else { return }
         updater.checkForUpdates()
     }
 }

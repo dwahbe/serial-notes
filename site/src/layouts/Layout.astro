@@ -20,7 +20,9 @@ const normalizedPath = path.endsWith("/") ? path : `${path}/`;
 const canonical = new URL(normalizedPath, siteOrigin).href;
 
 // Absolute URL for the build-time-generated social card (see src/pages/og.png.ts).
-const ogImage = new URL("/og.png", siteOrigin).href;
+// The ?v= busts per-URL link-preview caches (iMessage, Slack, etc.) — bump it
+// whenever the card artwork changes, or clients keep showing the stale image.
+const ogImage = new URL("/og.png?v=2", siteOrigin).href;
 
 // Structured data: a free macOS SoftwareApplication + the WebSite it lives on.
 // Gives search engines an explicit, rich-result-eligible description of the app

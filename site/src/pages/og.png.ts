@@ -8,17 +8,17 @@ export const prerender = true;
 
 export const GET: APIRoute = async () => {
   const body = await generateOpenGraphImage({
+    // No description: just the brand lockup + the headline, kept large and
+    // readable at iMessage/Slack preview sizes.
     title: "Meeting notes, where you already work",
-    description:
-      "Serial Notes — a menu bar app that records your meetings, transcribes on-device, and exports clean Markdown.",
     bgGradient: [[10, 10, 10]], // --color-ink
-    logo: { path: "./src/og-logo.png", size: [84] },
+    // og-logo.png = the site-header lockup (white mark + "Serial Notes") on
+    // transparency, rendered at 3× — regenerate with `bun scripts/make-og-logo.mjs`
+    // and keep this width at ⅓ of the PNG's.
+    logo: { path: "./src/og-logo.png", size: [378] },
     padding: 80,
     border: { color: [64, 64, 64], width: 14, side: "block-end" },
-    fonts: [
-      "https://api.fontsource.org/v1/fonts/geist-sans/latin-700-normal.ttf",
-      "https://api.fontsource.org/v1/fonts/geist-sans/latin-400-normal.ttf",
-    ],
+    fonts: ["https://api.fontsource.org/v1/fonts/geist-sans/latin-700-normal.ttf"],
     font: {
       title: {
         color: [250, 250, 250],
@@ -26,13 +26,6 @@ export const GET: APIRoute = async () => {
         weight: "Bold",
         families: ["Geist"],
         lineHeight: 1.1,
-      },
-      description: {
-        color: [160, 160, 160],
-        size: 30,
-        weight: "Normal",
-        families: ["Geist"],
-        lineHeight: 1.4,
       },
     },
     format: "PNG",

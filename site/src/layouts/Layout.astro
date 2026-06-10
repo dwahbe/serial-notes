@@ -46,6 +46,14 @@ const jsonLd = {
       downloadUrl: SITE.download,
       license: "https://opensource.org/licenses/MIT",
       isAccessibleForFree: true,
+      featureList: [
+        "Automatic meeting detection for Zoom, Teams, FaceTime, Slack, and more",
+        "On-device transcription with speaker labels",
+        "AI summaries and action items via Apple Intelligence",
+        "Markdown export readable by Notion, Apple Notes, Obsidian, and any editor",
+        "Works fully offline after a one-time setup",
+        "No account, no cloud, no bot joining calls",
+      ],
       offers: {
         "@type": "Offer",
         price: "0",
@@ -68,7 +76,13 @@ const jsonLd = {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="generator" content={Astro.generator} />
+
+    <!-- Self-hosted Geist (see global.css @font-face). Preloaded because both
+         faces render above the fold (headline + the faux-markdown window). -->
+    <link rel="preload" href="/fonts/GeistVF.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/GeistMonoVF.woff2" as="font" type="font/woff2" crossorigin />
 
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -96,6 +110,9 @@ const jsonLd = {
 
     <!-- Structured data (schema.org) -->
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
+
+    <!-- Page-specific head extras (e.g. the FAQ page's FAQPage JSON-LD). -->
+    <slot name="head" />
   </head>
   <body class="min-h-screen antialiased">
     <slot />

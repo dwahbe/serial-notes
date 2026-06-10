@@ -1,0 +1,36 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+
+// Astro emits this as dist/404.html, which Vercel serves automatically for
+// unknown paths (with the correct 404 status — no soft-404).
+---
+
+<Layout title="Page not found — Serial Notes" description="That page doesn't exist.">
+  <Nav />
+
+  <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
+    <span class="cross bottom-0 left-0"></span>
+    <span class="cross bottom-0 -right-px"></span>
+
+    <section class="flex min-h-[55vh] flex-col items-center justify-center px-5 py-24 text-center sm:px-8">
+      <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">404</p>
+      <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+        This page doesn't exist
+      </h1>
+      <p class="mt-5 max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+        The page you're looking for was moved, deleted, or never recorded in
+        the first place.
+      </p>
+      <a
+        href="/"
+        class="mt-8 inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-medium text-white transition-transform hover:-translate-y-0.5 hover:bg-ink-soft"
+      >
+        Back to the homepage
+      </a>
+    </section>
+  </main>
+
+  <Footer />
+</Layout>

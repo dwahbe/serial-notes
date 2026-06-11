@@ -3,12 +3,47 @@ import SwiftUI
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     weak var recordingState: RecordingState?
+    weak var meetingDetectionService: MeetingDetectionService?
+    /// Set when `SerialNotesApp.init` held back the launch-time model download
+    /// because another instance was still running; invoked once this launch has
+    /// survived the single-instance guard.
+    var deferredModelDownload: (() -> Void)?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Single-instance fast paths: a duplicate launch defers to the running
+        // copy and exits before the menu-bar icon appears. Conflicts that need
+        // UI (orphan reclaim, the DMG Quit-and-Install offer) are stashed for
+        // applicationDidFinishLaunching below — an alert shown before the app
+        // finishes launching can land behind the frontmost app and stall the
+        // launch invisibly. May not return: the defer path exits the process.
+        SingleInstanceGuard.enforce()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Resolve any conflict the guard deferred — it may exit the process.
+        // Detection is suspended around the flow's alerts and waits so a doomed
+        // duplicate can't pop a meeting banner of its own.
+        var resolution = SingleInstanceGuard.ConflictResolution.none
+        if SingleInstanceGuard.hasPendingConflict {
+            meetingDetectionService?.suspendDetection()
+            resolution = SingleInstanceGuard.resolvePendingConflict()
+            meetingDetectionService?.resumeDetection()
+        }
+
         // Offer to relocate into /Applications before anything else spins up. On a
         // successful move this never returns — the relocated copy relaunches itself.
-        MoveToApplications.moveIfNeeded()
+        // The guard above guarantees the destination is free of live instances, and
+        // its Quit-and-Install consent already covers a downgrade, so the prompt
+        // isn't shown twice.
+        MoveToApplications.moveIfNeeded(
+            replaceConsentGiven: resolution == .wonWithReplaceConsent
+        )
         NSApp.setActivationPolicy(.accessory)
+
+        // Still here means this launch won (or there was no conflict): start the
+        // model download init held back while another instance was running.
+        deferredModelDownload?()
+        deferredModelDownload = nil
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -96,11 +131,21 @@ struct SerialNotesApp: App {
         _onboardingSettings = State(initialValue: OnboardingSettings())
 
         appDelegate.recordingState = recording
+        appDelegate.meetingDetectionService = detector
 
         // Kick model download off at app launch, not when the popover first
         // opens — the banner lets users start recording without ever opening
         // the popover, so gating downloads on the popover's .task races the user.
-        Task { @MainActor in await modelState.downloadIfNeeded() }
+        // Exception: while another instance is running, hold the download back —
+        // this launch is probably about to defer to it, and the survivor owns
+        // the (shared-cache) download. The delegate re-kicks it if this launch
+        // wins its conflict instead.
+        let kickoffModelDownload = { Task { @MainActor in await modelState.downloadIfNeeded() } }
+        if SingleInstanceGuard.anotherInstanceIsRunning() {
+            appDelegate.deferredModelDownload = { _ = kickoffModelDownload() }
+        } else {
+            _ = kickoffModelDownload()
+        }
     }
 
     var body: some Scene {

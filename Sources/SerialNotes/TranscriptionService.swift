@@ -208,8 +208,10 @@ actor TranscriptionService {
         summarySettings: SummarySettings.Snapshot = .disabled,
         keepAudioFiles: Bool = true,
         summaryCutoff: TimeInterval? = nil,
-        extractSpeakers: Bool = true
+        extractSpeakers: Bool = true,
+        onPhase: (@Sendable (FinalizationPhase) -> Void)? = nil
     ) async -> Int {
+        onPhase?(.finishingTranscript)
         for side in AudioSide.allCases {
             do {
                 if let text = try await sideStates[side]?.asr?.finish() {
@@ -231,6 +233,7 @@ actor TranscriptionService {
         let duration = sessionStart.map { Date().timeIntervalSince($0) } ?? 0
         let finalHeader = TranscriptFormatter.header(date: sessionDate ?? sessionStart ?? Date(), duration: duration)
 
+        onPhase?(.improvingTranscript)
         let replacedWithHighAccuracyTranscript = await replaceTranscriptWithHighAccuracyVersion(header: finalHeader)
 
         // Streaming path: rewrite header with real duration in place, then close
@@ -252,12 +255,18 @@ actor TranscriptionService {
         // action items between the header and the first entry when requested.
         var pendingSpeakerCount = 0
         if let directory = sessionDirectory {
+            // Only announce the summary stage when the splice will actually run a
+            // model call — otherwise the bar would dwell on a no-op.
+            if summarySettings.generateSummary || summarySettings.generateActionItems {
+                onPhase?(.summarizing)
+            }
             await spliceSummarySections(
                 sessionDirectory: directory,
                 header: finalHeader,
                 settings: summarySettings,
                 summaryCutoff: summaryCutoff
             )
+            onPhase?(.wrappingUp)
             // Extract enrollment clips for unrecognized system speakers so the user can
             // name them afterwards. Must run after the high-accuracy render (the "Person N"
             // labels are now authoritative) and before audio cleanup (it reads system.wav).

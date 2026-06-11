@@ -15,6 +15,9 @@ final class RecordingState {
     /// depending on `finalizationTask`'s assignment timing. Observable because
     /// Settings disables setup-guide re-entry while finalization is active.
     private(set) var isFinalizing = false
+    /// Current milestone of the post-meeting pipeline while `isFinalizing`, driving
+    /// the popover's processing card. `nil` outside finalization.
+    private(set) var finalizationPhase: FinalizationPhase?
     var elapsedTime: TimeInterval = 0
     var errorMessage: String?
 
@@ -175,6 +178,7 @@ final class RecordingState {
         // Session fully clear — drop the finalizing flag and notify so the detector
         // re-baselines and resumes its start monitor.
         isFinalizing = false
+        finalizationPhase = nil
         onRecordingChange?()
     }
 
@@ -195,6 +199,9 @@ final class RecordingState {
         // (b) ends call-end monitoring now — which flushes its diagnostics into
         // pendingMeetingDiagnostics that we read just below.
         isFinalizing = true
+        // Seed the first phase synchronously so the popover never shows an empty
+        // processing card before endSession's first callback lands.
+        finalizationPhase = .finishingTranscript
         onRecordingChange?()
         let summarySnapshot = summarySettings?.snapshot() ?? .disabled
         let keepAudioFiles = storageSettings?.saveAudioFiles ?? true
@@ -225,7 +232,10 @@ final class RecordingState {
             summaryCutoff: context.summaryCutoff,
             // On app quit the prompt is suppressed anyway — skip clip extraction so
             // termination isn't delayed by writing WAVs the user won't see.
-            extractSpeakers: !context.stopReason.isAppQuit
+            extractSpeakers: !context.stopReason.isAppQuit,
+            onPhase: { [weak self] phase in
+                Task { @MainActor in self?.finalizationPhase = phase }
+            }
         )
         finalizeSession(
             context: context,

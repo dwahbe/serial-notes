@@ -71,6 +71,10 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
         }
 
+        if recordingState.isFinalizing {
+            processingCard
+        }
+
         switch modelDownloadState.status {
         case .downloading:
             HStack(spacing: 8) {
@@ -131,6 +135,32 @@ struct MenuBarView: View {
         summaryControls
 
         storageRow
+    }
+
+    /// Shown while a stopped recording finalizes (rewrite drain, high-accuracy ASR,
+    /// summary, cleanup). The bar advances at phase milestones — the long stages
+    /// expose no incremental progress — so the label carries the real signal.
+    private var processingCard: some View {
+        let phase = recordingState.finalizationPhase ?? .finishingTranscript
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Processing meeting")
+                .font(.caption)
+            ProgressView(value: phase.fractionComplete)
+                .controlSize(.small)
+                .animation(.easeInOut(duration: 0.35), value: phase.fractionComplete)
+            Text(phase.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.white.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
     private var storageRow: some View {

@@ -39,15 +39,19 @@ guard CommandLine.arguments.count > 1 else {
 }
 
 // Brand caption font: Geist SemiBold (matches the marketing site) when its TTF is
-// passed in, else the system semibold so the script still runs offline.
+// passed in, else the system semibold so the script still runs offline. Registered
+// once — CTFontManagerRegisterFontsForURL fails on a second call for the same URL,
+// which would silently knock later captions back to the system font.
+let geistAvailable: Bool = {
+    guard CommandLine.arguments.count > 2, !CommandLine.arguments[2].isEmpty else { return false }
+    let url = URL(fileURLWithPath: CommandLine.arguments[2]) as CFURL
+    if CTFontManagerRegisterFontsForURL(url, .process, nil) { return true }
+    FileHandle.standardError.write(Data("warning: could not load Geist — using system font\n".utf8))
+    return false
+}()
 func captionFont(size: CGFloat) -> NSFont {
-    if CommandLine.arguments.count > 2, !CommandLine.arguments[2].isEmpty {
-        let url = URL(fileURLWithPath: CommandLine.arguments[2]) as CFURL
-        if CTFontManagerRegisterFontsForURL(url, .process, nil),
-           let geist = NSFont(name: "Geist-SemiBold", size: size) {
-            return geist
-        }
-        FileHandle.standardError.write(Data("warning: could not load Geist — using system font\n".utf8))
+    if geistAvailable, let geist = NSFont(name: "Geist-SemiBold", size: size) {
+        return geist
     }
     return .systemFont(ofSize: size, weight: .semibold)
 }
@@ -100,6 +104,17 @@ if let arrow = NSImage(systemSymbolName: "arrow.right", accessibilityDescription
 } else {
     FileHandle.standardError.write(Data("warning: SF Symbol arrow.right unavailable\n".utf8))
 }
+
+// Second step, below the icons. The drag alone launches nothing — and a
+// menu-bar-only app shows no window or Dock icon until opened — so without this
+// line the install dead-ends at the drop. (Double-clicking the app in the DMG
+// also works: it installs itself and relaunches; see MoveToApplications.swift.)
+let hint = NSAttributedString(string: "then open it from your Applications folder", attributes: [
+    .font: captionFont(size: 15),
+    .foregroundColor: ink.withAlphaComponent(0.55),
+])
+let hintSize = hint.size()
+hint.draw(at: NSPoint(x: (W - hintSize.width) / 2, y: H - 318 - hintSize.height))
 
 NSGraphicsContext.restoreGraphicsState()
 

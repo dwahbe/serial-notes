@@ -1,7 +1,7 @@
 import AppKit
 
-/// First-launch "Move to Applications folder?" prompt — a native, dependency-free
-/// take on the well-worn LetsMove flow.
+/// First-launch "Move to Applications folder?" flow — a native, dependency-free
+/// take on the well-worn LetsMove pattern.
 ///
 /// **Why this exists:** users download `SerialNotes.dmg`, but some still drag the
 /// app out to `~/Downloads` (or run it straight from the mounted image). A freshly
@@ -12,6 +12,12 @@ import AppKit
 /// downloaded to" dead end. Relocating into `/Applications` once fixes auto-updates
 /// for good. The DMG's drag-to-Applications layout is the primary nudge; this is the
 /// backstop for everyone who skips it.
+///
+/// Two flavors: launched from a **read-only volume** (the mounted DMG) it installs
+/// silently — running in place is never viable there, so double-click-in-the-DMG
+/// becomes a one-action install (copy in → relaunch → first-run guide). Launched
+/// from a **writable spot** (`~/Downloads`) it asks first, since running in place
+/// is at least possible and the user may have meant it.
 enum MoveToApplications {
     /// Set once the user declines, so we don't nag on every launch. Keyed only by
     /// the decline itself — if they later move the app into /Applications by hand,
@@ -30,7 +36,6 @@ enum MoveToApplications {
 
         let bundleURL = Bundle.main.bundleURL
         guard !isInApplicationsFolder(bundleURL) else { return }
-        guard !UserDefaults.standard.bool(forKey: declinedDefaultsKey) else { return }
 
         // A translocated app runs from a read-only mount; the thing we actually
         // want to relocate is the original download it was translocated from.
@@ -38,9 +43,16 @@ enum MoveToApplications {
         let destination = URL(fileURLWithPath: "/Applications", isDirectory: true)
             .appendingPathComponent(bundleURL.lastPathComponent)
 
-        guard promptToMove() else {
-            UserDefaults.standard.set(true, forKey: declinedDefaultsKey)
-            return
+        // Read-only source = the mounted DMG (or the translocation mount itself when
+        // the SecTranslocate symbols don't resolve). The app can't live there — the
+        // volume ejects and Sparkle can't write — so install without asking; the
+        // declined flag only applies to the prompt below, not to this path.
+        if !isOnReadOnlyVolume(source) {
+            guard !UserDefaults.standard.bool(forKey: declinedDefaultsKey) else { return }
+            guard promptToMove() else {
+                UserDefaults.standard.set(true, forKey: declinedDefaultsKey)
+                return
+            }
         }
 
         do {
@@ -66,6 +78,13 @@ enum MoveToApplications {
             roots.append(userApps.resolvingSymlinksInPath().path)
         }
         return roots.contains { path == $0 || path.hasPrefix($0 + "/") }
+    }
+
+    /// True when the URL sits on a volume that can't be written — the mounted DMG,
+    /// a network image, or the App Translocation mount. Nowhere the app could keep
+    /// running from, so installing is the only sensible outcome.
+    private static func isOnReadOnlyVolume(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly ?? false
     }
 
     // `SecTranslocate*` are public Security-framework symbols but aren't surfaced in

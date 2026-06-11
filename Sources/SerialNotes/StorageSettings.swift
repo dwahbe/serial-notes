@@ -83,6 +83,9 @@ final class StorageSettings {
         panel.treatsFilePackagesAsDirectories = false
         panel.prompt = "Select"
         panel.message = "Choose where to save recordings"
+        if FileManager.default.fileExists(atPath: storageLocation.path) {
+            panel.directoryURL = storageLocation
+        }
 
         // Temporarily become a regular app so the panel can come to front
         NSApp.setActivationPolicy(.regular)

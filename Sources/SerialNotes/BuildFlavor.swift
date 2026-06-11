@@ -12,4 +12,13 @@ extension Bundle {
     var isDevBuild: Bool {
         (bundleIdentifier ?? "").hasSuffix(".dev")
     }
+
+    /// True when running inside `swift test`. The suites use Swift Testing, but
+    /// SwiftPM still hosts them in an XCTest runner, so the class is loadable.
+    /// This gates code with process-level side effects (relocating the bundle,
+    /// `exit(0)` in the single-instance guard) — if the test harness ever stops
+    /// linking XCTest, fix the detection here, in one place.
+    var isRunningTests: Bool {
+        NSClassFromString("XCTestCase") != nil
+    }
 }

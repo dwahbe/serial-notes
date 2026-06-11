@@ -27,27 +27,35 @@ enum MoveToApplications {
     /// Offer to move the app into /Applications when it's running from anywhere else.
     /// On a successful move this **exits the process** — the relocated copy relaunches
     /// itself — so it returns only when nothing was moved.
+    ///
+    /// `replaceConsentGiven` is true when `SingleInstanceGuard`'s Quit-and-Install
+    /// prompt already covered replacing (and possibly downgrading) the installed
+    /// copy this launch, so the downgrade confirmation isn't shown twice.
     @MainActor
-    static func moveIfNeeded() {
+    static func moveIfNeeded(replaceConsentGiven: Bool = false) {
         // Dev builds live in the repo's .build dir on purpose (run.sh owns their
         // lifecycle), and tests must never relocate anything.
         guard !Bundle.main.isDevBuild else { return }
-        guard NSClassFromString("XCTestCase") == nil else { return }
+        guard !Bundle.main.isRunningTests else { return }
 
         let bundleURL = Bundle.main.bundleURL
         guard !isInApplicationsFolder(bundleURL) else { return }
 
-        // A translocated app runs from a read-only mount; the thing we actually
-        // want to relocate is the original download it was translocated from.
-        let source = originalLocation(of: bundleURL) ?? bundleURL
+        let source = resolvedSource(of: bundleURL)
         let destination = URL(fileURLWithPath: "/Applications", isDirectory: true)
             .appendingPathComponent(bundleURL.lastPathComponent)
 
-        // Read-only source = the mounted DMG (or the translocation mount itself when
-        // the SecTranslocate symbols don't resolve). The app can't live there — the
-        // volume ejects and Sparkle can't write — so install without asking; the
-        // declined flag only applies to the prompt below, not to this path.
-        if !isOnReadOnlyVolume(source) {
+        if isReadOnlyInstallSource(source) {
+            // The mounted DMG. The app can't live there — the volume ejects and
+            // Sparkle can't write — so install without asking; the declined flag
+            // only applies to the prompt below, not to this path. One exception:
+            // confirm before silently *downgrading* a newer installed copy (old
+            // DMGs linger in ~/Downloads), unless the guard's Quit-and-Install
+            // prompt already said so.
+            if !replaceConsentGiven && installWouldDowngrade() {
+                guard promptToDowngrade(destination: destination) else { return }
+            }
+        } else {
             guard !UserDefaults.standard.bool(forKey: declinedDefaultsKey) else { return }
             guard promptToMove() else {
                 UserDefaults.standard.set(true, forKey: declinedDefaultsKey)
@@ -80,9 +88,25 @@ enum MoveToApplications {
         return roots.contains { path == $0 || path.hasPrefix($0 + "/") }
     }
 
+    /// The true on-disk location this launch came from: the translocation origin
+    /// when resolvable, otherwise the bundle URL itself. (`internal` so
+    /// `SingleInstanceGuard` derives install intent from the exact same recipe.)
+    static func resolvedSource(of bundleURL: URL) -> URL {
+        originalLocation(of: bundleURL) ?? bundleURL
+    }
+
+    /// Install intent: the resolved source is a genuinely read-only image (the
+    /// mounted DMG). An *unresolved* translocation mount is read-only too, but it
+    /// means a quarantined copy in some writable folder whose origin we couldn't
+    /// trace — never treat that as a DMG launch, or a stale ~/Downloads copy gets
+    /// offered (or silently installed) over a possibly newer app.
+    static func isReadOnlyInstallSource(_ source: URL) -> Bool {
+        guard !source.path.contains("/AppTranslocation/") else { return false }
+        return isOnReadOnlyVolume(source)
+    }
+
     /// True when the URL sits on a volume that can't be written — the mounted DMG,
-    /// a network image, or the App Translocation mount. Nowhere the app could keep
-    /// running from, so installing is the only sensible outcome.
+    /// a network image, or the App Translocation mount.
     private static func isOnReadOnlyVolume(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly ?? false
     }
@@ -111,7 +135,51 @@ enum MoveToApplications {
         return original.takeRetainedValue() as URL
     }
 
+    // MARK: - Version comparison
+
+    /// True when /Applications already holds a build of this app newer than the
+    /// running one — i.e. installing this copy would downgrade. CFBundleVersion is
+    /// the commit count (monotonic), so plain integer comparison is the whole
+    /// story; missing/non-git builds compare as "not newer" and install normally.
+    /// (`internal` so `SingleInstanceGuard` can warn in its Quit-and-Install prompt.)
+    static func installWouldDowngrade() -> Bool {
+        let destination = URL(fileURLWithPath: "/Applications", isDirectory: true)
+            .appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
+        guard let installed = buildNumber(of: Bundle(url: destination)),
+              let current = buildNumber(of: Bundle.main)
+        else { return false }
+        return installed > current
+    }
+
+    private static func buildNumber(of bundle: Bundle?) -> Int? {
+        guard let raw = bundle?.infoDictionary?["CFBundleVersion"] as? String else { return nil }
+        return Int(raw)
+    }
+
+    private static func shortVersion(of bundle: Bundle?) -> String? {
+        bundle?.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
     // MARK: - Prompt
+
+    @MainActor
+    private static func promptToDowngrade(destination: URL) -> Bool {
+        let installed = shortVersion(of: Bundle(url: destination)).map { " (\($0))" } ?? ""
+        let current = shortVersion(of: Bundle.main).map { " (\($0))" } ?? ""
+        let alert = NSAlert()
+        alert.messageText = "Install an older version of Serial Notes?"
+        alert.informativeText = """
+            The copy in your Applications folder\(installed) is newer than this \
+            one\(current). Replacing it will undo updates — you can open the \
+            installed copy instead.
+            """
+        alert.addButton(withTitle: "Install Older Version")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        if let icon = NSApp.applicationIconImage { alert.icon = icon }
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
 
     @MainActor
     private static func promptToMove() -> Bool {
@@ -151,20 +219,30 @@ enum MoveToApplications {
     /// Copy the bundle to `/Applications`, replacing any existing copy and clearing
     /// the quarantine flag so the relocated app launches without a Gatekeeper prompt.
     /// Falls back to an authenticated copy when `/Applications` isn't user-writable.
+    ///
+    /// The copy is staged next to the destination first and only then swapped in,
+    /// so a failed copy (disk full, I/O error) never costs the user their working
+    /// install — especially important now that the guard's replace flow has already
+    /// quit the running copy by the time this runs.
     private static func install(from source: URL, to destination: URL) throws {
         let fm = FileManager.default
-
-        if fm.fileExists(atPath: destination.path) {
-            // Replace an older copy. Trash rather than hard-delete so a mistake is
-            // recoverable; fall back to removeItem if the destination can't be trashed.
-            if (try? fm.trashItem(at: destination, resultingItemURL: nil)) == nil {
-                try? fm.removeItem(at: destination)
-            }
-        }
+        let staging = stagingURL(for: destination)
+        try? fm.removeItem(at: staging)  // stale leftover from an interrupted install
 
         do {
-            try fm.copyItem(at: source, to: destination)
+            try fm.copyItem(at: source, to: staging)
+            if fm.fileExists(atPath: destination.path) {
+                // Displace the old copy only after the new one fully copied. Trash
+                // rather than hard-delete so a mistake is recoverable; fall back to
+                // removeItem if the destination can't be trashed.
+                if (try? fm.trashItem(at: destination, resultingItemURL: nil)) == nil {
+                    try fm.removeItem(at: destination)
+                }
+            }
+            // Same volume → atomic rename.
+            try fm.moveItem(at: staging, to: destination)
         } catch {
+            try? fm.removeItem(at: staging)
             // /Applications usually allows admin-group users to write directly; if
             // not (a managed/non-admin Mac), escalate with an authenticated copy.
             try privilegedCopy(from: source, to: destination)
@@ -173,21 +251,32 @@ enum MoveToApplications {
         clearQuarantine(at: destination)
     }
 
+    /// Hidden sibling of the destination (`/Applications/.SerialNotes.app.incoming`)
+    /// — same volume so the final move is an atomic rename, dot-prefixed so Finder,
+    /// Spotlight, and LaunchServices ignore the half-copied bundle.
+    private static func stagingURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent()
+            .appendingPathComponent("." + destination.lastPathComponent + ".incoming")
+    }
+
     /// `ditto` the bundle into place with administrator rights via Apple Events.
     /// Used only when a plain copy is denied. Throws if the user cancels the auth
     /// prompt or the script fails.
     private static func privilegedCopy(from source: URL, to destination: URL) throws {
-        // One privileged shell does the whole replace: remove any stale copy (so we
-        // never merge old files into the new bundle), ditto the app in, hand
-        // ownership back to the invoking user (a root-owned bundle would block the
-        // quarantine strip below, future Sparkle updates, and normal use), then
-        // best-effort strip quarantine. `set -e` aborts on any critical step; the
-        // quarantine strip is non-fatal (xattr errors when the attr is already gone).
+        // One privileged shell does the whole replace: ditto into a staging path
+        // first (so a failed copy never costs the working install — `set -e` aborts
+        // before the rm), swap it in, hand ownership back to the invoking user (a
+        // root-owned bundle would block the quarantine strip below, future Sparkle
+        // updates, and normal use), then best-effort strip quarantine (xattr errors
+        // when the attr is already gone).
         let user = NSUserName()
+        let staging = stagingURL(for: destination)
         let command = [
             "set -e",
+            "/bin/rm -rf \(shellQuote(staging.path))",
+            "/usr/bin/ditto \(shellQuote(source.path)) \(shellQuote(staging.path))",
             "/bin/rm -rf \(shellQuote(destination.path))",
-            "/usr/bin/ditto \(shellQuote(source.path)) \(shellQuote(destination.path))",
+            "/bin/mv \(shellQuote(staging.path)) \(shellQuote(destination.path))",
             "/usr/sbin/chown -R \(shellQuote(user)) \(shellQuote(destination.path))",
             "/usr/bin/xattr -dr com.apple.quarantine \(shellQuote(destination.path)) 2>/dev/null || true",
         ].joined(separator: "; ")
@@ -214,9 +303,11 @@ enum MoveToApplications {
 
     /// Spawn a detached helper that waits for this process to exit, then opens the
     /// relocated copy; trash the leftover original and quit. The helper waits on our
-    /// PID so the new instance never races the old one for the same bundle ID. Returns
-    /// (without exiting) only when the helper can't be spawned, so the caller keeps the
-    /// app running in place rather than leaving the user with nothing launched.
+    /// PID so the relaunched copy never races *this* process for the same bundle ID;
+    /// `SingleInstanceGuard` (which ran before `moveIfNeeded`) guarantees no other
+    /// pre-existing instance is occupying the destination either. Returns (without
+    /// exiting) only when the helper can't be spawned, so the caller keeps the app
+    /// running in place rather than leaving the user with nothing launched.
     private static func relaunch(at destination: URL, removingOriginal original: URL) {
         let pid = ProcessInfo.processInfo.processIdentifier
         let waitThenOpen =

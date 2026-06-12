@@ -718,7 +718,13 @@ actor TranscriptionService {
             label = "Person \(state.nextSystemPersonNumber)"
             state.nextSystemPersonNumber += 1
         case .mic:
-            if !state.micSeenPrimarySpeaker {
+            // The first mic voice is assumed to be the user — unless their own
+            // voice is enrolled, in which case the diarizer names them via the
+            // enrollment match and an unmatched mic index is someone *else* in
+            // the room, who must not inherit the primary name. (On calls the
+            // final render still collapses stray "Voice N" mic labels back to
+            // the primary name — see normalizeMicLabels.)
+            if !state.micSeenPrimarySpeaker && enrolledMicNames.isEmpty {
                 label = micPrimaryName
                 state.micSeenPrimarySpeaker = true
             } else {

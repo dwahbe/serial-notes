@@ -1,0 +1,281 @@
+---
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { getSecret } from "astro:env/server";
+import Layout from "../layouts/Layout.astro";
+import {
+  fetchReleaseStats,
+  readPings,
+  type PingRow,
+  type ReleaseStat,
+} from "../lib/analytics";
+
+// Private analytics dashboard. Server-rendered so the password check is real;
+// noindex + robots.txt keep it out of search.
+export const prerender = false;
+
+const adminPassword = getSecret("ADMIN_PASSWORD");
+
+// Session cookie = HMAC of a fixed label keyed by the password: no session
+// store needed, and changing the password signs every browser out.
+const sessionToken = (pw: string) =>
+  createHmac("sha256", pw).update("serial-notes-admin-session-v1").digest("hex");
+
+const safeEqual = (a: string, b: string) => {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+};
+
+const COOKIE = "sn_admin";
+let loginError = false;
+
+if (Astro.request.method === "POST" && adminPassword) {
+  const form = await Astro.request.formData();
+  if (form.get("intent") === "logout") {
+    Astro.cookies.delete(COOKIE, { path: "/admin" });
+    return Astro.redirect("/admin", 303);
+  }
+  const attempt = String(form.get("password") ?? "");
+  if (attempt && safeEqual(attempt, adminPassword)) {
+    Astro.cookies.set(COOKIE, sessionToken(adminPassword), {
+      path: "/admin",
+      httpOnly: true,
+      secure: import.meta.env.PROD,
+      sameSite: "lax",
+      maxAge: 60 * 60 * 24 * 30,
+    });
+    return Astro.redirect("/admin", 303);
+  }
+  loginError = true;
+  Astro.response.status = 401;
+}
+
+const cookie = Astro.cookies.get(COOKIE)?.value;
+const authed = Boolean(
+  adminPassword && cookie && safeEqual(cookie, sessionToken(adminPassword)),
+);
+
+let releases: ReleaseStat[] = [];
+let releasesError: string | null = null;
+let pings: PingRow[] = [];
+let pingsError: string | null = null;
+
+if (authed) {
+  try {
+    releases = await fetchReleaseStats(getSecret("GITHUB_TOKEN"));
+  } catch (e) {
+    releasesError = e instanceof Error ? e.message : String(e);
+  }
+  const secretKey = getSecret("SUPABASE_SECRET_KEY");
+  if (!secretKey) {
+    pingsError = "SUPABASE_SECRET_KEY isn't set, so update-check data can't be read.";
+  } else {
+    try {
+      pings = await readPings(secretKey, 35);
+    } catch (e) {
+      pingsError = e instanceof Error ? e.message : String(e);
+    }
+  }
+}
+
+// ── Derived stats (all days are UTC, matching the counter's current_date) ──
+const dayString = (d: Date) => d.toISOString().slice(0, 10);
+const today = dayString(new Date());
+
+const byDay = new Map<string, number>();
+for (const p of pings) byDay.set(p.day, (byDay.get(p.day) ?? 0) + p.count);
+
+const last30: { day: string; count: number }[] = [];
+for (let i = 29; i >= 0; i--) {
+  const key = dayString(new Date(Date.now() - i * 86_400_000));
+  last30.push({ day: key, count: byDay.get(key) ?? 0 });
+}
+const maxDay = Math.max(1, ...last30.map((d) => d.count));
+
+const checksToday = byDay.get(today) ?? 0;
+const weekAvg = Math.round(
+  last30.slice(-7).reduce((sum, d) => sum + d.count, 0) / 7,
+);
+
+const sevenDaysAgo = dayString(new Date(Date.now() - 6 * 86_400_000));
+const byVersion = new Map<string, number>();
+for (const p of pings) {
+  if (p.day >= sevenDaysAgo) {
+    byVersion.set(p.version, (byVersion.get(p.version) ?? 0) + p.count);
+  }
+}
+const versions = [...byVersion.entries()].sort((a, b) => b[1] - a[1]);
+
+const totalDownloads = releases.reduce((sum, r) => sum + r.downloads, 0);
+const latestDownloads = releases[0]?.downloads ?? 0;
+
+const releaseDate = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+---
+
+<Layout title="Admin — Serial Notes" description="Private analytics dashboard.">
+  <Fragment slot="head">
+    <meta name="robots" content="noindex, nofollow" />
+  </Fragment>
+
+  <main class="mx-auto w-full max-w-3xl px-6 py-16">
+    {
+      !adminPassword && (
+        <div class="rounded-lg border border-line p-6">
+          <h1 class="text-lg font-semibold tracking-tightest">Admin</h1>
+          <p class="mt-2 text-sm text-muted">
+            Not configured: set the <code class="font-mono">ADMIN_PASSWORD</code>
+            environment variable to enable this page.
+          </p>
+        </div>
+      )
+    }
+
+    {
+      adminPassword && !authed && (
+        <div class="mx-auto mt-24 max-w-xs">
+          <h1 class="text-lg font-semibold tracking-tightest">Admin</h1>
+          <form method="post" class="mt-4 flex flex-col gap-3">
+            <input
+              type="password"
+              name="password"
+              placeholder="Password"
+              required
+              autofocus
+              autocomplete="current-password"
+              class="w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-ink"
+            />
+            <button
+              type="submit"
+              class="rounded-md bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink-soft"
+            >
+              Sign in
+            </button>
+            {loginError && (
+              <p class="text-sm text-red-600">Wrong password.</p>
+            )}
+          </form>
+        </div>
+      )
+    }
+
+    {
+      adminPassword && authed && (
+        <div>
+          <div class="flex items-baseline justify-between">
+            <h1 class="text-lg font-semibold tracking-tightest">
+              Serial Notes — analytics
+            </h1>
+            <form method="post">
+              <input type="hidden" name="intent" value="logout" />
+              <button class="text-sm text-muted underline-offset-2 hover:underline">
+                Sign out
+              </button>
+            </form>
+          </div>
+
+          {/* Stat cards */}
+          <div class="mt-8 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4">
+            <div class="bg-paper p-4">
+              <p class="text-xs text-muted">Checks today</p>
+              <p class="mt-1 font-mono text-2xl">{checksToday}</p>
+            </div>
+            <div class="bg-paper p-4">
+              <p class="text-xs text-muted">Daily avg (7d)</p>
+              <p class="mt-1 font-mono text-2xl">{weekAvg}</p>
+            </div>
+            <div class="bg-paper p-4">
+              <p class="text-xs text-muted">Total downloads</p>
+              <p class="mt-1 font-mono text-2xl">{totalDownloads}</p>
+            </div>
+            <div class="bg-paper p-4">
+              <p class="text-xs text-muted">Latest release</p>
+              <p class="mt-1 font-mono text-2xl">{latestDownloads}</p>
+            </div>
+          </div>
+
+          {/* Update checks chart */}
+          <section class="mt-10">
+            <h2 class="text-sm font-medium">Update checks — last 30 days</h2>
+            <p class="mt-1 text-xs text-muted">
+              One check ≈ one active install per day (Sparkle pings once daily
+              while the app runs). Counting starts once installs update to the
+              build whose feed points at serialnotes.app.
+            </p>
+            {pingsError ? (
+              <p class="mt-4 rounded-md border border-line bg-line-soft p-3 text-sm text-muted">
+                {pingsError}
+              </p>
+            ) : (
+              <div class="mt-4 flex h-32 items-end gap-[3px] rounded-lg border border-line p-3">
+                {last30.map((d) => (
+                  <div
+                    class="flex-1 rounded-sm bg-ink/80"
+                    style={`height: ${Math.max(2, Math.round((d.count / maxDay) * 100))}%${d.count === 0 ? "; opacity: 0.12" : ""}`}
+                    title={`${d.day}: ${d.count}`}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Version mix */}
+          {versions.length > 0 && (
+            <section class="mt-10">
+              <h2 class="text-sm font-medium">Versions in the wild — last 7 days</h2>
+              <table class="mt-3 w-full text-sm">
+                <tbody>
+                  {versions.map(([version, count]) => (
+                    <tr class="border-t border-line-soft">
+                      <td class="py-2 font-mono">{version}</td>
+                      <td class="py-2 text-right font-mono text-muted">
+                        {count} checks
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {/* Releases */}
+          <section class="mt-10">
+            <h2 class="text-sm font-medium">Release downloads — all time</h2>
+            <p class="mt-1 text-xs text-muted">
+              GitHub asset downloads. Includes Sparkle auto-updates, so this is
+              a ceiling on installs, not a user count.
+            </p>
+            {releasesError ? (
+              <p class="mt-4 rounded-md border border-line bg-line-soft p-3 text-sm text-muted">
+                GitHub fetch failed: {releasesError}
+              </p>
+            ) : (
+              <table class="mt-3 w-full text-sm">
+                <tbody>
+                  {releases.map((r) => (
+                    <tr class="border-t border-line-soft">
+                      <td class="py-2 font-mono">{r.tag}</td>
+                      <td class="py-2 text-muted">{releaseDate(r.publishedAt)}</td>
+                      <td class="py-2 text-right font-mono">{r.downloads}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+
+          <p class="mt-12 border-t border-line-soft pt-4 text-xs text-faint">
+            Privacy: the only signal collected is the daily Sparkle update check
+            every install already makes — stored as (day, version, count). No
+            IPs, no identifiers, no events.
+          </p>
+        </div>
+      )
+    }
+  </main>
+</Layout>

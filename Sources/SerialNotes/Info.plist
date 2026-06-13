@@ -33,12 +33,16 @@
     <string>Serial Notes uses the microphone to record audio alongside system audio.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Serial Notes adds your finished meeting notes into Apple Notes.</string>
-    <!-- Sparkle auto-update. SUFeedURL points at the appcast committed to the
-         repo (CI regenerates it on each tagged release). SUPublicEDKey is the
-         EdDSA public key; its private half lives in the keychain (and, for CI,
-         a GitHub secret) and signs every update archive. -->
+    <!-- Sparkle auto-update. SUFeedURL points at the site's counting proxy
+         (site/src/pages/appcast.xml.ts), which serves a byte-faithful copy of
+         the appcast committed to the repo (CI regenerates it on each tagged
+         release) and tallies the daily check as an anonymous active-install
+         count — day + version only, no identifiers. The site must be deployed
+         before a release ships with this URL. SUPublicEDKey is the EdDSA
+         public key; its private half lives in the keychain (and, for CI, a
+         GitHub secret) and signs every update archive. -->
     <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/dwahbe/serial-notes/main/appcast.xml</string>
+    <string>https://serialnotes.app/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>I7y1j8aFLMstcce0vytj3gnUcd5UEKI/PPwX/UWjnWI=</string>
 </dict>

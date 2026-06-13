@@ -12,7 +12,9 @@ final class MeetingBannerController {
     private var visiblePrompt: VisiblePrompt?
     private var endPromptModel: MeetingEndPromptModel?
 
-    fileprivate static let bannerWidth: CGFloat = 340
+    // Internal (not fileprivate) so the onboarding welcome-stage mock can size
+    // its miniature banner from the same source of truth rather than a copy.
+    static let bannerWidth: CGFloat = 340
     private static let screenInset: CGFloat = 14
     private static let autoDismissAfter: Duration = .seconds(15)
     private static let showAnimationDuration: CFTimeInterval = 0.22
@@ -233,13 +235,7 @@ private struct MeetingStartBannerView: View {
             strokeColor: .black.opacity(0.08)
         ) {
             Button(action: onRecord) {
-                Label("Record", systemImage: "record.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.black))
+                BannerCapsuleLabel(title: "Record", systemImage: "record.circle.fill")
             }
             .buttonStyle(.plain)
             .padding(.trailing, 8)
@@ -267,12 +263,7 @@ private struct MeetingNamingBannerView: View {
             strokeColor: .black.opacity(0.08)
         ) {
             Button(action: onName) {
-                Text("Name…")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.black))
+                BannerCapsuleLabel(title: "Name…")
             }
             .buttonStyle(.plain)
             .padding(.trailing, 8)
@@ -339,12 +330,7 @@ private struct MeetingEndBannerView: View {
             spacerMinLength: 8
         ) {
             Button(action: onKeepRecording) {
-                Text("Keep Recording")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.black))
+                BannerCapsuleLabel(title: "Keep Recording")
             }
             .buttonStyle(.plain)
             .padding(.trailing, 8)
@@ -357,15 +343,42 @@ private struct MeetingEndBannerView: View {
     }
 }
 
+/// The black pill button label shared by all three banner actions (Record,
+/// Name…, Keep Recording) and the onboarding welcome-stage's mock banner.
+/// Centralizing the capsule recipe keeps the stage miniature faithful to the
+/// real banner — restyle here and both update. `internal` for the stage.
+struct BannerCapsuleLabel: View {
+    let title: String
+    var systemImage: String?
+
+    var body: some View {
+        Group {
+            if let systemImage {
+                Label(title, systemImage: systemImage)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Text(title)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(Color.black))
+    }
+}
+
 /// The leading icon for a banner pill.
-private enum BannerIcon {
+/// `internal` (with `BannerPill`) so the onboarding welcome stage can render a
+/// faithful miniature of the meeting-detected banner.
+enum BannerIcon {
     /// An SF Symbol rendered in palette mode (white primary + `color` secondary).
     case symbol(String, color: Color)
     /// The custom Serial Notes brand mark, filled (black disc + white waveform).
     case brand
 }
 
-private struct BannerPill<Trailing: View>: View {
+struct BannerPill<Trailing: View>: View {
     let icon: BannerIcon
     let title: String
     let subtitle: String

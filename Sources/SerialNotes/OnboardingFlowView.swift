@@ -26,8 +26,19 @@ struct OnboardingFlowView: View {
     }
 
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives the auto-advance gate: the story only cycles while the app is the
+    /// active one, so a backgrounded / occluded guide doesn't tick forever.
+    @Environment(\.controlActiveState) private var controlActiveState
 
     @State private var step: Step = .welcome
+    /// Active beat of the welcome screen's "how it works" story (stage +
+    /// numbered list, kept in lockstep). Auto-cycles; tapping a row jumps.
+    @State private var storyStep = 0
+    /// Bumped on every list tap so re-selecting the *current* beat still
+    /// restarts the auto-advance clock — a plain `storyStep` write to its
+    /// existing value wouldn't change the task id.
+    @State private var storyGeneration = 0
     @State private var micGranted = false
     @State private var systemAudioGranted = false
     /// True from the moment the user taps "Allow System Audio Recording" until the
@@ -77,11 +88,20 @@ struct OnboardingFlowView: View {
             // Reset to a clean first step. A SwiftUI `Window` scene can retain its
             // content @State across close/reopen, so a re-entry via "Show Setup
             // Guide…" must not resume mid-flow with stale steps / permission ticks.
-            step = .welcome
-            systemAudioGranted = false
-            awaitingSystemAudio = false
-            showingEnrollment = false
-            storageConfirmation = nil
+            // Disable animations for the reset so a reopen snaps straight to a
+            // fresh welcome instead of visibly cross-fading back from the
+            // retained step/beat (the step + story changes are otherwise animated).
+            var resetTransaction = Transaction()
+            resetTransaction.disablesAnimations = true
+            withTransaction(resetTransaction) {
+                step = .welcome
+                storyStep = 0
+                storyGeneration = 0
+                systemAudioGranted = false
+                awaitingSystemAudio = false
+                showingEnrollment = false
+                storageConfirmation = nil
+            }
             // Mark shown the moment the guide actually appears (not at the
             // auto-open decision point), so a failed openWindow can't suppress
             // onboarding forever. Idempotent, so manual re-opens are harmless.
@@ -124,18 +144,75 @@ struct OnboardingFlowView: View {
 
     // MARK: - Steps
 
+    /// Shared animation for story beat changes (auto-advance + tap-to-jump), so
+    /// the stage cross-fade and the numbered-list highlight move in lockstep
+    /// under one curve — `WelcomeStageView` and `NumberedStepList` carry no
+    /// `.animation(value:)` of their own, they inherit this transaction.
+    private static let storyAnimation: Animation = .easeInOut(duration: 0.3)
+    private static let storyInterval: Duration = .seconds(3.4)
+
+    /// The story auto-cycles only while motion is allowed AND the app is active
+    /// — a backgrounded or occluded guide shouldn't wake a timer every few
+    /// seconds. Folded into the task id, so toggling either condition restarts
+    /// (or stops) the loop immediately.
+    private var storyAutoplays: Bool {
+        !reduceMotion && controlActiveState != .inactive
+    }
+
+    /// Equatable task id for the auto-advance loop. Any field change cancels the
+    /// in-flight sleep and re-evaluates: a same-beat tap (`generation`), a
+    /// Reduce Motion / active-state toggle (`autoplays`), or an auto-advance
+    /// (`step`) each reset the clock correctly.
+    private struct StoryClock: Equatable {
+        var step: Int
+        var generation: Int
+        var autoplays: Bool
+    }
+
     private var welcomeStep: some View {
         OnboardingStepScaffold(
-            icon: SetupStepIcon(systemName: "waveform"),
+            header: AnyView(
+                WelcomeStageView(step: storyStep)
+                    .padding(.horizontal, 40)
+            ),
             title: "Welcome to Serial Notes",
-            subtitle: "Serial Notes records your meetings and turns them into clean, private notes.",
-            bullets: [
-                ("lock.shield", "Your recordings never leave your Mac."),
-                ("menubar.rectangle", "Lives quietly in your menu bar."),
-                ("sparkles", "Transcribes and summarizes on-device."),
-            ],
-            primary: PrimaryAction("Get Started") { advance() }
+            subtitle: "From call to clean notes — all on your Mac.",
+            primary: PrimaryAction("Get Started") { advance() },
+            extra: {
+                NumberedStepList(
+                    items: WelcomeStoryBeat.allCases.map(\.caption),
+                    active: storyStep,
+                    onSelect: selectStory
+                )
+                .padding(.horizontal, 40)
+            },
+            utilityRow: {
+                // Restores the explicit recordings-stay-local promise (and lock
+                // iconography) the welcome bullets used to carry — the one
+                // privacy guarantee every first-run user is shown.
+                Label("Your recordings never leave your Mac.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         )
+        // Auto-advance the story every `storyInterval`. The id restarts the
+        // clock on any beat change or condition toggle; toggling autoplay off
+        // mid-wait cancels the in-flight task before it can fire.
+        .task(id: StoryClock(step: storyStep, generation: storyGeneration, autoplays: storyAutoplays)) {
+            guard storyAutoplays else { return }
+            try? await Task.sleep(for: Self.storyInterval)
+            guard !Task.isCancelled else { return }
+            withAnimation(Self.storyAnimation) {
+                storyStep = (storyStep + 1) % WelcomeStoryBeat.allCases.count
+            }
+        }
+    }
+
+    /// Jump the story to `index` (list tap / VoiceOver activate). Bumps the
+    /// generation so re-selecting the *current* beat still restarts the clock.
+    private func selectStory(_ index: Int) {
+        storyGeneration += 1
+        withAnimation(Self.storyAnimation) { storyStep = index }
     }
 
     private var microphoneStep: some View {
@@ -303,7 +380,12 @@ struct OnboardingFlowView: View {
             title: name.isEmpty ? "You're all set" : "You're all set, \(name)",
             subtitle: "Serial Notes is ready. It lives in your menu bar and offers to record when it notices a meeting.",
             bullets: [
-                ("waveform.circle", "Detects calls and offers to record."),
+                // Only promise summaries when Apple Intelligence is actually
+                // available — the summarizer has no non-AI fallback, so a user
+                // who skipped that step would never see one.
+                aiAvailable
+                    ? ("sparkles", "Transcribes and summarizes on-device.")
+                    : ("waveform", "Transcribes every meeting on-device."),
                 ("doc.text", "Saves a Markdown transcript per meeting."),
                 ("gearshape", "Adjust anything in Settings."),
             ],
@@ -469,7 +551,10 @@ private struct PrimaryAction {
 /// or removing rows — so the primary button never shifts as the user moves
 /// through the guide.
 private struct OnboardingStepScaffold<Extra: View, UtilityRow: View>: View {
-    let icon: SetupStepIcon
+    /// Top visual of the centered zone — the circled step icon on most steps,
+    /// or a custom view (the welcome step's animated stage). `AnyView` is fine
+    /// for a private single-file helper; it spares a third generic parameter.
+    let header: AnyView
     let title: String
     let subtitle: String
     let bullets: [(icon: String, text: String)]
@@ -484,7 +569,7 @@ private struct OnboardingStepScaffold<Extra: View, UtilityRow: View>: View {
     let utilityRow: () -> UtilityRow
 
     init(
-        icon: SetupStepIcon,
+        header: AnyView,
         title: String,
         subtitle: String,
         bullets: [(icon: String, text: String)] = [],
@@ -492,7 +577,7 @@ private struct OnboardingStepScaffold<Extra: View, UtilityRow: View>: View {
         @ViewBuilder extra: @escaping () -> Extra,
         @ViewBuilder utilityRow: @escaping () -> UtilityRow
     ) {
-        self.icon = icon
+        self.header = header
         self.title = title
         self.subtitle = subtitle
         self.bullets = bullets
@@ -501,10 +586,25 @@ private struct OnboardingStepScaffold<Extra: View, UtilityRow: View>: View {
         self.utilityRow = utilityRow
     }
 
+    init(
+        icon: SetupStepIcon,
+        title: String,
+        subtitle: String,
+        bullets: [(icon: String, text: String)] = [],
+        primary: PrimaryAction? = nil,
+        @ViewBuilder extra: @escaping () -> Extra,
+        @ViewBuilder utilityRow: @escaping () -> UtilityRow
+    ) {
+        self.init(
+            header: AnyView(icon), title: title, subtitle: subtitle,
+            bullets: bullets, primary: primary, extra: extra, utilityRow: utilityRow
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 24) {
-                icon
+                header
 
                 VStack(spacing: 12) {
                     Text(title)

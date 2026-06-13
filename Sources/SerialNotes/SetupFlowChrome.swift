@@ -64,6 +64,58 @@ struct BulletList: View {
     }
 }
 
+// MARK: - Numbered step list
+
+/// The "how it works" 1–2–3–4 on the onboarding welcome screen. Monospaced
+/// `01`–`04` numerals echo the marketing site's stepper; rows fade in one
+/// after another (all at once under Reduce Motion, matching the site's
+/// static fallback). The list syncs with the welcome stage: the `active` row
+/// highlights, and each row is a real `Button` (so VoiceOver and Full Keyboard
+/// Access can drive the stage) that jumps to its beat via `onSelect`. Highlight
+/// changes animate via the caller's `withAnimation`, not a local modifier.
+struct NumberedStepList: View {
+    let items: [String]
+    /// Row highlighted in lockstep with `WelcomeStageView`.
+    let active: Int
+    /// Tap/activate handler — jumps the stage to the chosen beat.
+    let onSelect: (Int) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var revealed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // id: \.offset — identity is the row's position (which `active`
+            // also keys off), so duplicate captions can't collide on identity.
+            ForEach(Array(items.enumerated()), id: \.offset) { index, text in
+                let isActive = active == index
+                Button {
+                    onSelect(index)
+                } label: {
+                    HStack(spacing: 12) {
+                        Text(String(format: "%02d", index + 1))
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                        Text(text)
+                            .font(.callout)
+                            .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .opacity(revealed ? 1 : 0)
+                .offset(y: revealed ? 0 : 6)
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.35).delay(Double(index) * 0.15),
+                    value: revealed
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { revealed = true }
+    }
+}
+
 // MARK: - Progress dots
 
 struct PhraseDots: View {

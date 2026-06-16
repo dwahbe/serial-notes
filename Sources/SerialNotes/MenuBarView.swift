@@ -16,12 +16,7 @@ struct MenuBarView: View {
     }
 
     private func showSettings() {
-        // .accessory apps don't front their Settings window automatically.
-        // Match the pattern used by StorageSettings.pickFolder(): flip to
-        // .regular, activate, then flip back once the window is dismissed.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
-        openSettings()
+        navigation.presentSettings()
     }
 
     var body: some View {

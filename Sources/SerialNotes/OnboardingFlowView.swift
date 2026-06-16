@@ -488,10 +488,6 @@ struct OnboardingFlowView: View {
 
     private func chooseCustomStorage() {
         let picked = storageSettings.pickFolder()
-        // pickFolder() restores `.accessory` on the way out — keep the guide in
-        // the foreground.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
         guard picked else { return }
         let url = storageSettings.storageLocation
         let parent = url.deletingLastPathComponent().lastPathComponent

@@ -103,7 +103,7 @@ struct SerialNotesApp: App {
                 onName: {
                     guard let navigation else { return }
                     navigation.openMeetings(session: dir)
-                    SerialNotesApp.openSettings(navigation: navigation)
+                    navigation.presentSettings()
                 },
                 onDismiss: {}
             )
@@ -204,27 +204,6 @@ struct SerialNotesApp: App {
         .defaultPosition(.center)
     }
 
-    /// Bring the Settings window to the front from non-view code (the post-meeting
-    /// prompt). Mirrors `MenuBarView.showSettings` / `StorageSettings.pickFolder`: flip
-    /// to `.regular`, activate, open. `WindowCloseChrome` restores `.accessory` on close.
-    @MainActor
-    static func openSettings(navigation: SettingsNavigation) {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
-        if let action = navigation.openSettingsAction {
-            // The real SwiftUI `openSettings` action — works reliably in a menu-bar app.
-            action()
-            return
-        }
-        // Fallback: the AppKit selector (macOS 13+ `showSettingsWindow:`, previously
-        // `showPreferencesWindow:`). Restore `.accessory` if neither is handled so we
-        // don't leave the app stuck in the Dock with no window open.
-        let opened = NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            || NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        if !opened {
-            NSApp.setActivationPolicy(.accessory)
-        }
-    }
 }
 
 /// The menu bar icon. Captures the `openSettings` / `openWindow` environment

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Shared navigation state for the Settings window so the post-meeting prompt can
@@ -26,9 +27,28 @@ final class SettingsNavigation {
     /// "Show Setup Guide…" button in Settings can both present it.
     @ObservationIgnored var openSetupAction: (@MainActor () -> Void)?
 
+    /// The live Settings window, captured when it appears, so non-view code can
+    /// re-front it without flipping activation policy (which would park a Dock icon).
+    @ObservationIgnored weak var settingsWindow: NSWindow?
+
     /// Switch to the Meetings tab and (optionally) open a specific session for naming.
     func openMeetings(session: URL?) {
         selectedTab = .meetings
         pendingNamingSession = session
+    }
+
+    /// Front the Settings window without flipping activation policy: activate, open
+    /// (or focus) via the captured SwiftUI action, then raise the window above the
+    /// frontmost app on a repeat open (the once-only `WindowBringToFront` can't).
+    func presentSettings() {
+        NSApp.activate()
+        guard let openSettingsAction else {
+            // The SwiftUI action wasn't captured yet — fall back to the AppKit selector.
+            _ = NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                || NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            return
+        }
+        openSettingsAction()
+        settingsWindow?.orderFrontRegardless()
     }
 }

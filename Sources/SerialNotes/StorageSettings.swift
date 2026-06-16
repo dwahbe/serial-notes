@@ -87,8 +87,7 @@ final class StorageSettings {
             panel.directoryURL = storageLocation
         }
 
-        // Temporarily become a regular app so the panel can come to front
-        NSApp.setActivationPolicy(.regular)
+        // Stay `.accessory`; activating brings the modal panel to the front.
         NSApp.activate()
         panel.level = .modalPanel
 
@@ -97,9 +96,6 @@ final class StorageSettings {
             storageLocation = url
             picked = true
         }
-
-        // Return to accessory (menu bar only) mode
-        NSApp.setActivationPolicy(.accessory)
         return picked
     }
 }

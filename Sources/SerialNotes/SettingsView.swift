@@ -21,10 +21,9 @@ struct SettingsView: View {
                 .tag(SettingsNavigation.Tab.meetings)
         }
         .frame(width: 520, height: 500)
-        // Shared with the setup guide: restores `.accessory` only when no other
-        // titled window remains, so Settings and the guide can be open together
-        // without fighting over activation policy. See SetupFlowChrome.swift.
-        .background(WindowCloseChrome())
+        // Front the window without flipping to `.regular`, and capture it so the
+        // menu bar / post-meeting prompt can re-front it. See SetupFlowChrome.swift.
+        .background(WindowBringToFront { navigation.settingsWindow = $0 })
     }
 }
 
@@ -426,12 +425,7 @@ private struct GeneralSettingsTab: View {
     }
 
     private func showSetupGuide() {
-        // Don't programmatically close Settings here. Closing it would race the
-        // guide window's registration: the shared WindowCloseChrome guard could
-        // run before `openWindow` makes the guide a titled window and flip the app
-        // to `.accessory`, so the guide opens with no Dock presence / not in front.
-        // The guard already keeps `.regular` while either window is open, so the
-        // guide just layers on top; closing it returns to Settings.
+        // Leave Settings open; the guide layers on top and returns to it on close.
         navigation.openSetupAction?()
     }
 

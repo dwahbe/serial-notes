@@ -136,26 +136,6 @@ struct PhraseDots: View {
 
 // MARK: - Window chrome
 
-/// Restore `.accessory` activation policy when the *last* titled window goes
-/// away — but only then. A menu-bar-only app flips to `.regular` to show a real
-/// window (Settings or the setup guide); when it closes we must drop back to
-/// `.accessory` or the app lingers in the Dock + Cmd-Tab. Excluding the window
-/// that is *currently closing* (still `isVisible` during `willClose`) and
-/// keeping `.regular` while any other titled window remains is what lets the
-/// Settings window and the setup guide be open together without yanking the
-/// policy out from under each other.
-@MainActor
-func restoreAccessoryIfNoOtherTitledWindow(excluding closing: NSWindow?) {
-    let hasOtherTitledWindow = NSApp.windows.contains { window in
-        window !== closing
-            && window.isVisible
-            && window.styleMask.contains(.titled)
-    }
-    if !hasOtherTitledWindow {
-        NSApp.setActivationPolicy(.accessory)
-    }
-}
-
 /// Pulls the hosting `NSWindow` above other apps' windows whenever it appears.
 ///
 /// A menu-bar-only (`.accessory`) app that auto-opens a `Window` scene at launch
@@ -166,30 +146,43 @@ func restoreAccessoryIfNoOtherTitledWindow(excluding closing: NSWindow?) {
 /// Grabbing the window once it actually exists (in `viewDidMoveToWindow`) and
 /// calling `orderFrontRegardless()` is what reliably surfaces the setup guide.
 struct WindowBringToFront: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { BringToFrontView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    /// Called with the hosting window once it exists, so a caller can capture it for
+    /// later re-fronting (the Settings window does this).
+    var onWindow: (@MainActor (NSWindow) -> Void)?
+
+    func makeNSView(context: Context) -> NSView { BringToFrontView(onWindow: onWindow) }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? BringToFrontView)?.onWindow = onWindow
+    }
 }
 
 private final class BringToFrontView: NSView {
+    var onWindow: (@MainActor (NSWindow) -> Void)?
+
+    init(onWindow: (@MainActor (NSWindow) -> Void)?) {
+        self.onWindow = onWindow
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
-        // Surface + focus the window WITHOUT flipping to `.regular`. An `.accessory`
-        // (menu-bar-only) app can front a window via `orderFrontRegardless()` — which
-        // is what actually fixes the "mounts behind" problem — so we keep the app out
-        // of the Dock + Cmd-Tab (its no-Dock-icon design) instead of parking a Dock
-        // icon there for the whole setup flow.
+        // An `.accessory` (menu-bar-only) app fronts a window with `orderFrontRegardless()`
+        // instead of flipping to `.regular`, keeping it out of the Dock + Cmd-Tab.
+        onWindow?(window)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
     }
 }
 
-/// Watches the hosting `NSWindow` and runs teardown when it closes: an optional
-/// caller hook (e.g. resume meeting detection) followed by the shared
-/// activation-policy restore. Shared by the Settings window and the setup guide.
+/// Runs a teardown hook when the hosting `NSWindow` closes (e.g. the setup guide
+/// resuming meeting detection).
 struct WindowCloseChrome: NSViewRepresentable {
-    /// Extra teardown to run on `willClose`, before the activation-policy restore.
+    /// Teardown to run on `willClose`.
     var onClose: (@MainActor () -> Void)?
 
     func makeNSView(context: Context) -> NSView {
@@ -245,6 +238,5 @@ private final class WindowCloseObserver: NSView {
 
     @objc private func windowWillClose(_ note: Notification) {
         onClose?()
-        restoreAccessoryIfNoOtherTitledWindow(excluding: note.object as? NSWindow)
     }
 }

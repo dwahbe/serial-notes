@@ -6,13 +6,16 @@
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
 // `h` is the mobile height; `hLg` scales each mark up ~1.4x on desktop (sm and
-// above), where the strip has more room to breathe.
+// above), where the strip has more room to breathe. `soon: true` dims the
+// (decorative) mark and adds a "Coming soon" badge below for apps not yet
+// supported (Notion), kept last in the row. The badge sits outside the dimmed
+// element so its text keeps full AA contrast.
 const apps = [
-  { name: "Notion", file: "notion", h: 27, hLg: 38 },
   { name: "Apple Notes", file: "apple-notes", h: 30, hLg: 42 },
   { name: "Obsidian", file: "obsidian", h: 32, hLg: 45 },
   { name: "Bear", file: "bear", h: 31, hLg: 43 },
   { name: "Logseq", file: "logseq", h: 30, hLg: 42 },
+  { name: "Notion", file: "notion", h: 27, hLg: 38, soon: true },
 ];
 ---
 
@@ -24,19 +27,24 @@ const apps = [
 
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
       {
-        apps.map(({ name, file, h, hLg }) => (
-          <div class="group flex items-center gap-2.5">
+        apps.map(({ name, file, h, hLg, soon }) => (
+          <div class="group relative flex items-center gap-2.5">
             <img
               src={`/logos/${file}.svg`}
               alt=""
               aria-hidden="true"
               decoding="async"
               style={`--h:${h}px;--h-lg:${hLg}px`}
-              class="logo-mark w-auto"
+              class={`logo-mark w-auto ${soon ? "opacity-50" : ""}`}
             />
             <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
               {name}
             </span>
+            {soon && (
+              <span class="absolute left-1/2 top-full mt-2.5 -translate-x-1/2 whitespace-nowrap rounded-full bg-line-soft px-2 py-[3px] text-[10px] font-semibold uppercase tracking-wide text-muted">
+                Coming soon
+              </span>
+            )}
           </div>
         ))
       }

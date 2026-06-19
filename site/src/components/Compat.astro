@@ -6,10 +6,15 @@
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
 // `h` is the mobile height; `hLg` scales each mark up ~1.4x on desktop (sm and
-// above), where the strip has more room to breathe. `soon: true` dims the
-// (decorative) mark and adds a "Coming soon" badge below for apps not yet
-// supported (Notion), kept last in the row. The badge sits outside the dimmed
-// element so its text keeps full AA contrast.
+// above), where the strip has more room to breathe. `soon: true` marks an app
+// not yet supported (Notion, kept last): the (decorative, aria-hidden) logo is
+// dimmed and the name gets a small inline "Coming soon" pill. The pill is
+// inline (inside the name span, not a flex sibling or a floating absolute
+// badge) so it reads as one phrase bound to the app and can't detach from it or
+// overlap the wrapped "+ anything" line on mobile. Only the logo is dimmed —
+// not the name or pill — so both keep AA contrast (a 50%-opacity name or pill
+// composites to ~2:1 on white, which fails); the pill's text-muted on bg-line
+// is ~5.4:1.
 const apps = [
   { name: "Apple Notes", file: "apple-notes", h: 30, hLg: 42 },
   { name: "Obsidian", file: "obsidian", h: 32, hLg: 45 },
@@ -28,7 +33,7 @@ const apps = [
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
       {
         apps.map(({ name, file, h, hLg, soon }) => (
-          <div class="group relative flex items-center gap-2.5">
+          <div class="group flex items-center gap-2.5">
             <img
               src={`/logos/${file}.svg`}
               alt=""
@@ -39,12 +44,12 @@ const apps = [
             />
             <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
               {name}
+              {soon && (
+                <span class="ml-2 inline-block whitespace-nowrap rounded-full bg-line px-2.5 py-[3px] align-[1px] text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  Coming soon
+                </span>
+              )}
             </span>
-            {soon && (
-              <span class="absolute left-1/2 top-full mt-2.5 -translate-x-1/2 whitespace-nowrap rounded-full bg-line-soft px-2 py-[3px] text-[10px] font-semibold uppercase tracking-wide text-muted">
-                Coming soon
-              </span>
-            )}
           </div>
         ))
       }

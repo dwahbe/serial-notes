@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Face-ID-style guided flow for voice enrollment.
@@ -22,6 +23,9 @@ struct VoiceEnrollmentFlowView: View {
     @State private var step: Step = .intro
     @State private var nameDraft: String = ""
     @State private var errorMessage: String?
+    /// Captured host window (the enrollment sheet), so we can re-front it after the
+    /// mic-permission prompt buries it.
+    @State private var enrollWindow = WeakWindow()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,6 +59,7 @@ struct VoiceEnrollmentFlowView: View {
         .onChange(of: recorder.state) { _, newState in
             handleRecorderStateChange(newState)
         }
+        .background(WindowBringToFront { enrollWindow.value = $0 })
     }
 
     private var cancelButtonTitle: String {
@@ -69,7 +74,11 @@ struct VoiceEnrollmentFlowView: View {
     private func startCapture() {
         errorMessage = nil
         step = .capture
-        Task { await recorder.start() }
+        Task {
+            floatAppWindows(keeping: enrollWindow.value)
+            await recorder.start()
+            settleAppWindows(keeping: enrollWindow.value)
+        }
     }
 
     private func retryCapture(oldClipURL: URL) {

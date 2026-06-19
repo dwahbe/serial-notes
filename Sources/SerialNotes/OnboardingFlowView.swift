@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import FoundationModels
 import SwiftUI
@@ -59,6 +60,10 @@ struct OnboardingFlowView: View {
     /// coupling.
     private let notesFolderName = "Meeting Notes"
 
+    /// Captured guide window, so the mic-permission flow can re-front it — the prompt
+    /// buries an `.accessory` window without posting `didBecomeActive`.
+    @State private var guideWindow = WeakWindow()
+
     var body: some View {
         VStack(spacing: 0) {
             PhraseDots(count: Step.allCases.count, active: step.rawValue)
@@ -109,7 +114,7 @@ struct OnboardingFlowView: View {
             meetingDetector.suspendDetection()
             refreshPermissionState()
         }
-        .background(WindowBringToFront())
+        .background(WindowBringToFront(keepFrontOnReactivate: true) { guideWindow.value = $0 })
         .background(WindowCloseChrome(onClose: handleWindowClose))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Reflect mic + system-audio + Apple Intelligence changes the user made
@@ -123,7 +128,9 @@ struct OnboardingFlowView: View {
             // prompt — optimistically show the same ✓ as microphone. A later launch
             // reads the true value either way.
             if awaitingSystemAudio, !systemAudioGranted {
+                awaitingSystemAudio = false
                 systemAudioGranted = true
+                settleAppWindows(keeping: guideWindow.value)
             }
         }
         .sheet(isPresented: $showingEnrollment) {
@@ -437,15 +444,18 @@ struct OnboardingFlowView: View {
 
     private func requestMicrophone() {
         Task {
+            floatAppWindows(keeping: guideWindow.value)
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             refreshPermissionState()
+            settleAppWindows(keeping: guideWindow.value)
         }
     }
 
     private func requestSystemAudio() {
+        let status = systemAudioAuthorizationStatus()
         // Already granted (from a prior launch, or the user answered then clicked
         // again) — reflect it without re-firing anything.
-        if case .granted = systemAudioAuthorizationStatus() {
+        if case .granted = status {
             systemAudioGranted = true
             awaitingSystemAudio = false
             return
@@ -456,7 +466,42 @@ struct OnboardingFlowView: View {
         // handler optimistically show ✓ once the user answers and the app
         // reactivates.
         awaitingSystemAudio = true
-        Task { await Task.detached { triggerSystemAudioPrompt() }.value }
+        // Only float when a prompt will actually appear (undetermined). A prior denial
+        // shows no prompt and never deactivates us, so floating then would leave the
+        // window stuck above other apps with no didBecomeActive to settle it.
+        let willPrompt: Bool
+        if case .undetermined = status {
+            floatAppWindows(keeping: guideWindow.value)
+            willPrompt = true
+        } else {
+            willPrompt = false
+        }
+        Task {
+            await Task.detached { triggerSystemAudioPrompt() }.value
+            // The TCC prompt has no completion callback (unlike the mic's
+            // requestAccess, which lets us settle immediately), and an `.accessory`
+            // app won't reactivate itself once the user answers — so the guide
+            // would just sit there until clicked. Reclaim focus ourselves: pulse
+            // activation until the system prompt closes, at which point
+            // `didBecomeActive` fires, shows the optimistic ✓, and settles.
+            if willPrompt {
+                await reclaimActivationAfterSystemAudioPrompt()
+            }
+        }
+    }
+
+    /// Pulse `NSApp.activate()` until the app is frontmost again, so the guide
+    /// reclaims focus once the system-audio TCC prompt is answered. Cooperative
+    /// activation (macOS 14+) grants the request only after the system prompt is
+    /// dismissed; the resulting `didBecomeActive` clears `awaitingSystemAudio`,
+    /// which ends this loop. Bounded (~30s) so a never-answered prompt can't spin
+    /// forever — the user can still click the window as a fallback.
+    private func reclaimActivationAfterSystemAudioPrompt() async {
+        for _ in 0..<120 {
+            guard awaitingSystemAudio else { return }
+            if !NSApp.isActive { NSApp.activate() }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
     }
 
     /// One-click destination tile. For Apple Notes / Bear this enables direct-send

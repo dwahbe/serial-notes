@@ -67,9 +67,9 @@ struct BulletList: View {
 // MARK: - Numbered step list
 
 /// The "how it works" 1–2–3–4 on the onboarding welcome screen. Monospaced
-/// `01`–`04` numerals echo the marketing site's stepper; rows fade in one
-/// after another (all at once under Reduce Motion, matching the site's
-/// static fallback). The list syncs with the welcome stage: the `active` row
+/// `01`–`04` numerals echo the marketing site's stepper; the whole list slides
+/// up together as one smooth motion on appear (instantly under Reduce Motion,
+/// matching the site's static fallback). The list syncs with the welcome stage: the `active` row
 /// highlights, and each row is a real `Button` (so VoiceOver and Full Keyboard
 /// Access can drive the stage) that jumps to its beat via `onSelect`. Highlight
 /// changes animate via the caller's `withAnimation`, not a local modifier.
@@ -103,16 +103,26 @@ struct NumberedStepList: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .opacity(revealed ? 1 : 0)
-                .offset(y: revealed ? 0 : 6)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.35).delay(Double(index) * 0.15),
-                    value: revealed
-                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { revealed = true }
+        // Reveal as one gentle upward rise + fade. Driven by an explicit
+        // `withAnimation` *inside* `onAppear` (which fires only after the rows are
+        // laid out) rather than a persistent `.animation(_:value:)` modifier — the
+        // latter let the rows' first-layout positioning get animated from the view
+        // origin (top-leading), which read as a diagonal fly-in. Scoping the
+        // animation to this one transaction keeps the motion a pure vertical
+        // scroll-up; the `active`-row highlight stays on the caller's withAnimation.
+        .opacity(revealed ? 1 : 0)
+        .offset(y: revealed ? 0 : 10)
+        .onAppear {
+            guard !revealed else { return }
+            if reduceMotion {
+                revealed = true
+            } else {
+                withAnimation(.easeOut(duration: 0.4)) { revealed = true }
+            }
+        }
     }
 }
 
@@ -136,6 +146,49 @@ struct PhraseDots: View {
 
 // MARK: - Window chrome
 
+/// Weak holder for a captured `NSWindow`, so a view can re-front its own window
+/// later without retaining it.
+@MainActor final class WeakWindow {
+    weak var value: NSWindow?
+}
+
+/// Raise all of the app's visible windows above other apps for the duration of a
+/// system permission prompt. `AVCaptureDevice.requestAccess` deactivates an
+/// `.accessory` app, and macOS blocks it from reactivating for ~0.3s afterwards, so
+/// every window would drop behind the previously-active app. Floating them keeps them
+/// on top through that gap with no flash; `primary` stays topmost. Pair with
+/// `settleAppWindows`. Call before the prompt.
+@MainActor
+func floatAppWindows(keeping primary: NSWindow?) {
+    let top = primary?.sheetParent ?? primary
+    for window in NSApp.windows where window.isVisible && window.canBecomeMain {
+        window.level = .floating
+        if window !== top { window.orderFrontRegardless() }
+    }
+    top?.orderFrontRegardless()
+}
+
+/// Reactivate and lower the floated windows back to normal — but only once the app is
+/// actually active again, so they can't briefly drop behind during the post-prompt
+/// gap. `primary` is left key/front.
+@MainActor
+func settleAppWindows(keeping primary: NSWindow?, attempt: Int = 0) {
+    // Cooperative activation (macOS 14+): `activate()` is a request, but the system
+    // grants it here because we triggered the prompt. The windows stay up via their
+    // `.floating` level regardless; we only lower them back once actually active.
+    NSApp.activate()
+    guard NSApp.isActive || attempt >= 15 else {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            settleAppWindows(keeping: primary, attempt: attempt + 1)
+        }
+        return
+    }
+    for window in NSApp.windows where window.canBecomeMain {
+        window.level = .normal
+    }
+    (primary?.sheetParent ?? primary)?.makeKeyAndOrderFront(nil)
+}
+
 /// Pulls the hosting `NSWindow` above other apps' windows whenever it appears.
 ///
 /// A menu-bar-only (`.accessory`) app that auto-opens a `Window` scene at launch
@@ -146,11 +199,18 @@ struct PhraseDots: View {
 /// Grabbing the window once it actually exists (in `viewDidMoveToWindow`) and
 /// calling `orderFrontRegardless()` is what reliably surfaces the setup guide.
 struct WindowBringToFront: NSViewRepresentable {
+    /// Also re-front the window whenever the app reactivates — e.g. after a system
+    /// permission prompt or a System Settings round-trip steals focus, which an
+    /// `.accessory` app won't recover from on its own. Both Settings and the guide
+    /// host prompts, so both opt in.
+    var keepFrontOnReactivate = false
     /// Called with the hosting window once it exists, so a caller can capture it for
     /// later re-fronting (the Settings window does this).
     var onWindow: (@MainActor (NSWindow) -> Void)?
 
-    func makeNSView(context: Context) -> NSView { BringToFrontView(onWindow: onWindow) }
+    func makeNSView(context: Context) -> NSView {
+        BringToFrontView(keepFrontOnReactivate: keepFrontOnReactivate, onWindow: onWindow)
+    }
     func updateNSView(_ nsView: NSView, context: Context) {
         (nsView as? BringToFrontView)?.onWindow = onWindow
     }
@@ -159,13 +219,23 @@ struct WindowBringToFront: NSViewRepresentable {
 private final class BringToFrontView: NSView {
     var onWindow: (@MainActor (NSWindow) -> Void)?
 
-    init(onWindow: (@MainActor (NSWindow) -> Void)?) {
+    init(keepFrontOnReactivate: Bool, onWindow: (@MainActor (NSWindow) -> Void)?) {
         self.onWindow = onWindow
         super.init(frame: .zero)
+        if keepFrontOnReactivate {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(appDidBecomeActive),
+                name: NSApplication.didBecomeActiveNotification,
+                object: nil
+            )
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -175,6 +245,14 @@ private final class BringToFrontView: NSView {
         onWindow?(window)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
+    @objc private func appDidBecomeActive() {
+        // Reactivated after a prompt / System Settings round-trip — re-raise the window
+        // the app would otherwise leave buried. Raise only (no `makeKey`) so an open
+        // menu-bar popover isn't dismissed, and skip it when the window is hidden.
+        guard let window, window.isVisible else { return }
         window.orderFrontRegardless()
     }
 }

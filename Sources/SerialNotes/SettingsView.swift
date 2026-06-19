@@ -17,13 +17,13 @@ struct SettingsView: View {
                 .tabItem { Label("People", systemImage: "person.wave.2") }
                 .tag(SettingsNavigation.Tab.people)
             MeetingsSettingsTab()
-                .tabItem { Label("Meetings", systemImage: "person.2.wave.2") }
+                .tabItem { Label("Meetings", systemImage: "video") }
                 .tag(SettingsNavigation.Tab.meetings)
         }
         .frame(width: 520, height: 500)
         // Front the window without flipping to `.regular`, and capture it so the
         // menu bar / post-meeting prompt can re-front it. See SetupFlowChrome.swift.
-        .background(WindowBringToFront { navigation.settingsWindow = $0 })
+        .background(WindowBringToFront(keepFrontOnReactivate: true) { navigation.settingsWindow = $0 })
     }
 }
 

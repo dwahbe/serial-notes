@@ -1,7 +1,9 @@
 ---
-// "How it works" — a scroll-driven stepper (Watershed-style). As you scroll,
-// the active step highlights on the left and one Mac "desktop" stage on the
-// right walks through the real app flow: detect → record → summarize → export.
+// "How it works" — a scroll-driven stepper (Dia-style). On desktop the two-column
+// panel pins for the section's whole scroll: the step list stays put while the
+// active step's focus + description and the matching Mac "stage" visual change as
+// you scroll (detect → record → summarize → export). The list never travels up
+// the page — only the focus moves between titles, Dia-style.
 // Scroll-driven on desktop; auto-cycles on mobile; static under reduced motion.
 const steps = [
   {
@@ -28,7 +30,7 @@ const steps = [
 ---
 
 <section id="features" data-howitworks class="border-t border-line">
-  <div class="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
+  <div class="mx-auto max-w-6xl px-5 pt-16 pb-10 sm:px-8 sm:pt-20 sm:pb-10">
     <!-- heading -->
     <div class="max-w-2xl">
       <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">How it works</p>
@@ -41,13 +43,19 @@ const steps = [
       </p>
     </div>
 
-    <div class="mt-10 flex flex-col lg:mt-14 lg:grid lg:grid-cols-[1fr_1.05fr] lg:gap-12 xl:gap-16">
-      <!-- ── STAGE — sticky beside steps on lg, below the carousel on mobile ── -->
-      <div class="relative order-2 mt-8 lg:mt-0">
-        <div class="lg:sticky lg:top-24">
+    <!-- Scroll track (desktop): the panel inside pins for the track's whole
+         height, so the step list stays in place while scroll only moves the
+         focus + active visual. On mobile the track collapses to a normal block
+         (swipeable carousel above, stage below). -->
+    <div data-track class="mt-10 desk:mt-0 desk:h-[360vh]">
+      <div
+        class="mx-auto flex max-w-3xl flex-col desk:sticky desk:top-0 desk:grid desk:h-screen desk:max-w-none desk:grid-cols-[1fr_1.05fr] desk:content-center desk:items-start desk:gap-12 xl:desk:gap-16"
+      >
+        <!-- ── STAGE — the visual: on top on mobile, right column on lg ── -->
+        <div class="relative order-1 desk:order-2 desk:mt-0">
           <div
             data-stage
-            class="relative h-[400px] overflow-hidden rounded-2xl border border-line bg-gradient-to-br from-[#f7f7f8] to-[#e9e9eb] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.22)] sm:h-[460px]"
+            class="relative h-[400px] overflow-hidden rounded-2xl border border-line bg-gradient-to-br from-[#f7f7f8] to-[#e9e9eb] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.22)] sm:h-[460px] desk:h-[calc(100vh_-_clamp(280px,28vh,440px))]"
           >
             <!-- soft wallpaper sheen -->
             <div
@@ -153,7 +161,7 @@ const steps = [
 
             <!-- ░░ VISUAL 2 — summary + action items ░░ -->
             <div data-vis="2" class="vis absolute inset-0">
-              <div class="absolute inset-x-0 top-9 grid place-items-center px-6">
+              <div class="absolute inset-x-0 top-9 grid place-items-center px-6 desk:inset-y-0">
                 <div class="w-full max-w-[370px] rounded-xl border border-line bg-white p-5 shadow-[0_18px_50px_-16px_rgba(0,0,0,0.28)]">
                   <div class="flex items-center gap-2">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="text-ink" aria-hidden="true">
@@ -196,7 +204,7 @@ const steps = [
 
             <!-- ░░ VISUAL 3 — clean Markdown file ░░ -->
             <div data-vis="3" class="vis absolute inset-0">
-              <div class="absolute inset-x-0 top-9 grid place-items-center px-6">
+              <div class="absolute inset-x-0 top-9 grid place-items-center px-6 desk:inset-y-0">
                 <div class="w-full max-w-[400px] overflow-hidden rounded-xl border border-line bg-paper shadow-[0_18px_50px_-16px_rgba(0,0,0,0.28)]">
                   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
                     <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
@@ -221,45 +229,81 @@ const steps = [
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- ── STEPS — swipeable cards on mobile, scroll-driven list on lg ── -->
-      <ol
-        data-steps
-        class="order-1 -mx-5 flex snap-x snap-mandatory items-stretch gap-4 overflow-x-auto px-5 pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:mx-0 lg:block lg:overflow-visible lg:px-0 lg:pb-0"
-      >
-        {
-          steps.map((step, i) => (
-            <li class="w-[82%] shrink-0 snap-center sm:w-[58%] lg:w-auto lg:shrink lg:snap-align-none">
-              <button
-                data-step
-                type="button"
-                class="step group flex h-full w-full cursor-pointer flex-col rounded-xl border border-line p-5 text-left lg:min-h-[42vh] lg:justify-center lg:rounded-none lg:border-0 lg:p-0"
-              >
-                <div class="bar-track relative h-[2px] w-full overflow-hidden rounded-full bg-line">
-                  <span data-bar class="absolute inset-y-0 left-0 w-full origin-left bg-ink" style="transform:scaleX(0)" />
-                </div>
-                <div class="mt-4 flex items-baseline gap-3 lg:mt-5">
-                  <span data-num class="font-mono text-sm text-faint transition-colors">{step.n}</span>
-                  <span
-                    data-title
-                    class="text-xl font-semibold tracking-tight text-ink transition-colors lg:text-2xl lg:text-muted"
-                    set:html={step.title}
-                  />
-                </div>
-                <div class="desc-wrap">
-                  <div>
-                    <p class="pt-3 max-w-md text-[15px] leading-relaxed text-muted" set:html={step.body} />
+        <!-- ── STEPS — pinned focus list on lg; on mobile the active step is
+             shown as a caption under the stage instead (see [data-cap]). ── -->
+        <ol
+          data-steps
+          class="hidden desk:order-1 desk:block desk:space-y-6"
+        >
+          {
+            steps.map((step, i) => (
+              <li>
+                <button
+                  data-step
+                  type="button"
+                  class="step group relative flex h-full w-full cursor-pointer flex-col rounded-xl border border-line p-5 text-left desk:rounded-none desk:border-0 desk:py-4 desk:pl-7 desk:pr-0"
+                >
+                  <div class="bar-track relative h-[2px] w-full overflow-hidden rounded-full bg-line">
+                    <span data-bar class="absolute inset-y-0 left-0 w-full bg-ink" />
                   </div>
-                </div>
-              </button>
-            </li>
-          ))
-        }
-        <!-- trailing spacer so the last step can reach center while the stage
-             stays pinned (desktop only) -->
-        <li aria-hidden="true" class="hidden lg:block lg:h-[22vh]"></li>
-      </ol>
+                  <div class="mt-4 flex flex-col gap-1.5 desk:mt-0">
+                    <span data-num class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint transition-colors">{step.n}</span>
+                    <span
+                      data-title
+                      class="text-xl font-semibold tracking-tight text-ink transition-colors desk:text-2xl desk:text-muted"
+                      set:html={step.title}
+                    />
+                  </div>
+                  <div class="desc-wrap">
+                    <div>
+                      <p class="pt-3 max-w-md text-[15px] leading-relaxed text-muted" set:html={step.body} />
+                    </div>
+                  </div>
+                </button>
+              </li>
+            ))
+          }
+        </ol>
+
+        <!-- Active-step caption (mobile only) — Apple-style: bold lead-in, muted
+             body. All captions share one grid cell so the block is always as
+             tall as the longest one — the arrows below stay put as you step,
+             and the active caption cross-fades like the stage. -->
+        <div class="order-2 mt-6 grid desk:hidden">
+          {
+            steps.map((step, i) => (
+              <p
+                data-cap
+                class={`cap [grid-area:1/1] text-pretty text-[15px] leading-relaxed text-muted${i === 0 ? " is-active" : ""}`}
+              >
+                <strong class="font-semibold text-ink" set:html={step.title} />. <span set:html={step.body} />
+              </p>
+            ))
+          }
+        </div>
+
+        <!-- Carousel nav (mobile only) — steps one at a time, disabled at the
+             ends, like Apple's product carousels. -->
+        <div class="order-3 mt-4 flex items-center justify-end gap-2.5 desk:hidden">
+          <button
+            data-prev
+            type="button"
+            aria-label="Previous step"
+            class="grid h-10 w-10 place-items-center rounded-full bg-black/[0.06] text-ink/75 transition enabled:hover:bg-black/[0.1] enabled:active:scale-95 disabled:opacity-30"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+          </button>
+          <button
+            data-next
+            type="button"
+            aria-label="Next step"
+            class="grid h-10 w-10 place-items-center rounded-full bg-black/[0.06] text-ink/75 transition enabled:hover:bg-black/[0.1] enabled:active:scale-95 disabled:opacity-30"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -274,23 +318,14 @@ const steps = [
     opacity: 1;
   }
 
-  [data-bar] {
-    transition: transform 0.12s linear;
+  /* Mobile caption layers — cross-fade in step with the stage above them. */
+  .cap {
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
   }
-
-  /* Mobile: the active card gets a stronger edge, and its progress bar fills
-     over the auto-advance dwell. */
-  @media (max-width: 1023px) {
-    .step.is-active {
-      border-color: var(--color-faint);
-    }
-    .step.is-active [data-bar] {
-      animation: barfill 4.2s linear forwards;
-    }
-  }
-  @keyframes barfill {
-    from { transform: scaleX(0); }
-    to { transform: scaleX(1); }
+  .cap.is-active {
+    opacity: 1;
   }
 
   [data-howitworks].is-recording .rec-dot {
@@ -320,8 +355,10 @@ const steps = [
     50% { transform: scaleY(1); }
   }
 
-  /* On desktop, collapse each step's description unless it's active. */
-  @media (min-width: 1024px) {
+  /* Pinned desktop (wide AND tall — matches the `desk` variant): collapse each
+     step's description unless active, dim inactive titles, and turn the progress
+     bar into a left rail. */
+  @media (min-width: 1024px) and (min-height: 700px) {
     .desc-wrap {
       display: grid;
       grid-template-rows: 0fr;
@@ -338,6 +375,26 @@ const steps = [
     .step.is-active [data-num],
     .step.is-active [data-title] {
       color: var(--color-ink);
+    }
+    .bar-track {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 2px;
+      background: transparent; /* no rail on the inactive steps */
+    }
+    [data-bar] {
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleY(0);
+      transform-origin: top center;
+      transition: transform 0.3s ease;
+    }
+    /* Only the focused step shows its vertical accent bar (Dia-style). */
+    .step.is-active [data-bar] {
+      transform: scaleY(1);
     }
   }
 
@@ -357,17 +414,17 @@ const steps = [
     const stage = section.querySelector<HTMLElement>("[data-stage]")!;
     const steps = Array.from(section.querySelectorAll<HTMLElement>("[data-step]"));
     const vis = Array.from(stage.querySelectorAll<HTMLElement>(".vis"));
-    const bars = steps.map((s) => s.querySelector<HTMLElement>("[data-bar]"));
     const timerEl = stage.querySelector<HTMLElement>("[data-timer]")!;
     const N = steps.length;
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const desktopMq = window.matchMedia("(min-width: 1024px)");
+    const desktopMq = window.matchMedia("(min-width: 1024px) and (min-height: 700px)");
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-    const track = section.querySelector<HTMLElement>("[data-steps]")!;
+    const caps = Array.from(section.querySelectorAll<HTMLElement>("[data-cap]"));
+    const prevBtn = section.querySelector<HTMLButtonElement>("[data-prev]");
+    const nextBtn = section.querySelector<HTMLButtonElement>("[data-next]");
 
     let active = -1;
-    let scrollDriven = false; // set per-mount; desktop drives the bar fill via JS
     let recTimer: ReturnType<typeof setInterval> | null = null;
 
     function startRecTimer() {
@@ -384,144 +441,161 @@ const steps = [
       recTimer = null;
     }
 
-    function setActive(i: number, progress = 1) {
-      if (i !== active) {
-        active = i;
-        steps.forEach((s, idx) => s.classList.toggle("is-active", idx === i));
-        vis.forEach((v, idx) => v.classList.toggle("is-active", idx === i));
-        stage.classList.toggle("is-recording", i === 1);
-        if (i === 1) startRecTimer();
-        else stopRecTimer();
-      }
-      if (scrollDriven) {
-        bars.forEach((b, idx) => {
-          if (!b) return;
-          const scale = idx < i ? 1 : idx > i ? 0 : progress;
-          b.style.transform = `scaleX(${scale})`;
-        });
-      }
+    function setActive(i: number) {
+      if (i === active) return;
+      active = i;
+      steps.forEach((s, idx) => s.classList.toggle("is-active", idx === i));
+      vis.forEach((v, idx) => v.classList.toggle("is-active", idx === i));
+      caps.forEach((c, idx) => c.classList.toggle("is-active", idx === i));
+      stage.classList.toggle("is-recording", i === 1);
+      if (i === 1) startRecTimer();
+      else stopRecTimer();
+      if (prevBtn) prevBtn.disabled = i <= 0;
+      if (nextBtn) nextBtn.disabled = i >= N - 1;
     }
 
     // Mode is chosen per-mount and re-chosen when crossing the lg breakpoint,
     // so a desktop→narrow resize (or a preview that loads wide) still works.
+    //
+    // Desktop: the [data-track] wrapper is tall and its inner panel is pinned
+    // (position: sticky). Scroll progress through the track (0→1) maps onto the
+    // N steps, so the list stays put while only the focus + active visual move.
     function mountDesktop(): () => void {
-      scrollDriven = true;
+      const trackEl = section!.querySelector<HTMLElement>("[data-track]")!;
       let ticking = false;
+      let frame = 0;
+      // While a click-to-jump smooth-scroll is in flight, hold the destination
+      // open and skip the steps we scroll past, so 1→4 doesn't flash 2 and 3.
+      // Cleared on arrival, or if the user grabs the scroll themselves.
+      let jumpingTo = -1;
+      const idxFromScroll = () => {
+        const scrollable = trackEl.offsetHeight - window.innerHeight;
+        if (scrollable <= 0) return 0;
+        const scrolled = clamp(-trackEl.getBoundingClientRect().top, 0, scrollable);
+        return clamp(Math.floor((scrolled / scrollable) * N), 0, N - 1);
+      };
       const update = () => {
         ticking = false;
-        const trigger = window.innerHeight * 0.42;
-        let idx = 0;
-        for (let i = 0; i < N; i++) {
-          if (steps[i].getBoundingClientRect().top <= trigger) idx = i;
+        const idx = idxFromScroll();
+        if (jumpingTo >= 0) {
+          if (idx === jumpingTo) jumpingTo = -1; // arrived — resume tracking
+          else return; // in transit — keep the destination open, skip the rest
         }
-        const cur = steps[idx].getBoundingClientRect().top;
-        const nextTop =
-          idx < N - 1
-            ? steps[idx + 1].getBoundingClientRect().top
-            : cur + steps[idx].offsetHeight;
-        const progress = clamp((trigger - cur) / Math.max(1, nextTop - cur), 0, 1);
-        setActive(idx, progress);
+        setActive(idx);
       };
       const onScroll = () => {
         if (ticking) return;
         ticking = true;
-        requestAnimationFrame(update);
+        frame = requestAnimationFrame(update);
       };
-      const onClick = (e: Event) =>
-        (e.currentTarget as HTMLElement).scrollIntoView({
-          behavior: reduce ? "auto" : "smooth",
-          block: "center",
-        });
+      const cancelJump = () => (jumpingTo = -1);
+      // Click a step → open it now and smooth-scroll its segment into view,
+      // without activating (flashing) the steps in between.
+      const onClick = (e: Event) => {
+        const i = steps.indexOf(e.currentTarget as HTMLElement);
+        const scrollable = Math.max(0, trackEl.offsetHeight - window.innerHeight);
+        const targetP = N > 1 ? (i + 0.5) / N : 0;
+        const top = window.scrollY + trackEl.getBoundingClientRect().top + targetP * scrollable;
+        jumpingTo = i;
+        setActive(i);
+        window.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
+      };
       window.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("resize", onScroll);
+      // A manual scroll mid-jump takes over: stop suppressing intermediates.
+      // For keydown, only scroll-driving keys count — a Tab/letter shouldn't
+      // cancel the jump and flash the steps in between.
+      const scrollKeys = new Set([" ", "Spacebar", "PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"]);
+      const onKey = (e: KeyboardEvent) => {
+        if (scrollKeys.has(e.key)) cancelJump();
+      };
+      window.addEventListener("wheel", cancelJump, { passive: true });
+      window.addEventListener("touchstart", cancelJump, { passive: true });
+      window.addEventListener("keydown", onKey);
       steps.forEach((s) => s.addEventListener("click", onClick));
       update();
       return () => {
+        cancelAnimationFrame(frame);
         window.removeEventListener("scroll", onScroll);
         window.removeEventListener("resize", onScroll);
+        window.removeEventListener("wheel", cancelJump);
+        window.removeEventListener("touchstart", cancelJump);
+        window.removeEventListener("keydown", onKey);
         steps.forEach((s) => s.removeEventListener("click", onClick));
       };
     }
 
+    // Mobile: no carousel — the stage + a single caption show the active step,
+    // and the arrows step through it (disabled at the ends). Auto-play walks the
+    // flow once when the section scrolls into view, then stops (so it doesn't
+    // fight the arrows' end-stops).
     function mountMobile(): () => void {
-      scrollDriven = false;
-      // The card whose center is nearest the track's center is active.
-      const pickCentered = () => {
-        const tr = track.getBoundingClientRect();
-        const center = tr.left + tr.width / 2;
-        let best = 0;
-        let bestDist = Infinity;
-        steps.forEach((s, i) => {
-          const r = s.getBoundingClientRect();
-          const d = Math.abs(r.left + r.width / 2 - center);
-          if (d < bestDist) {
-            bestDist = d;
-            best = i;
-          }
-        });
-        setActive(best);
-      };
-      let tking = false;
-      const onTrackScroll = () => {
-        if (tking) return;
-        tking = true;
-        requestAnimationFrame(() => {
-          tking = false;
-          pickCentered();
-        });
-      };
-      const onClick = (e: Event) => {
-        const el = e.currentTarget as HTMLElement;
-        setActive(steps.indexOf(el));
-        el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "center", block: "nearest" });
-      };
-      track.addEventListener("scroll", onTrackScroll, { passive: true });
-      steps.forEach((s) => s.addEventListener("click", onClick));
-      pickCentered();
-
+      setActive(active < 0 ? 0 : active);
       let auto: ReturnType<typeof setInterval> | null = null;
       let engaged = false;
-      let inView = false; // gate auto-advance until the section is scrolled to
-      // Update active directly (don't rely on the scroll event firing), then
-      // scroll the card into view.
-      const advance = () => {
-        const next = (active + 1) % N;
-        setActive(next);
-        steps[next].scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-      };
-      const startAuto = () => {
-        if (auto || engaged || reduce || document.hidden || !inView) return;
-        auto = setInterval(advance, 4200);
-      };
+      let inView = false;
       const stopAuto = () => {
         if (auto) clearInterval(auto);
         auto = null;
+      };
+      const advance = () => {
+        if (active >= N - 1) return stopAuto(); // reached the end — stop
+        setActive(active + 1);
+      };
+      const startAuto = () => {
+        if (auto || engaged || reduce || document.hidden || !inView || active >= N - 1) return;
+        auto = setInterval(advance, 4200);
       };
       const disengage = () => {
         engaged = true;
         stopAuto();
       };
+      // Arrows step one at a time; clamp() handles the ends (the buttons are also
+      // disabled there), and any use stops the auto-play.
+      const go = (delta: number) => {
+        disengage();
+        setActive(clamp(active + delta, 0, N - 1));
+      };
+      const onPrev = () => go(-1);
+      const onNext = () => go(1);
       const onVis = () => (document.hidden ? stopAuto() : startAuto());
+      // Swipe the stage — left = next, right = prev (alongside the arrows).
+      // Passive + threshold-gated on a clearly horizontal gesture, so taps and
+      // vertical page scrolling are left alone.
+      let sx = 0;
+      let sy = 0;
+      const onTouchStart = (e: TouchEvent) => {
+        const t = e.changedTouches[0];
+        sx = t.clientX;
+        sy = t.clientY;
+      };
+      const onTouchEnd = (e: TouchEvent) => {
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const dy = t.clientY - sy;
+        if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) go(dx < 0 ? 1 : -1);
+      };
+      prevBtn?.addEventListener("click", onPrev);
+      nextBtn?.addEventListener("click", onNext);
+      stage.addEventListener("touchstart", onTouchStart, { passive: true });
+      stage.addEventListener("touchend", onTouchEnd, { passive: true });
       document.addEventListener("visibilitychange", onVis);
-      track.addEventListener("touchstart", disengage, { passive: true });
-      track.addEventListener("wheel", disengage, { passive: true });
-      // Only cycle once the carousel is actually on screen; pause when it
-      // leaves so it isn't already mid-rotation when the user arrives.
+      // Only auto-play while the section is actually on screen.
       const io = new IntersectionObserver(
         (entries) => {
           inView = entries[0].isIntersecting;
           if (inView) startAuto();
           else stopAuto();
         },
-        { threshold: 0.5 }
+        { threshold: 0.4 }
       );
-      io.observe(track);
+      io.observe(stage);
       return () => {
         io.disconnect();
-        track.removeEventListener("scroll", onTrackScroll);
-        steps.forEach((s) => s.removeEventListener("click", onClick));
-        track.removeEventListener("touchstart", disengage);
-        track.removeEventListener("wheel", disengage);
+        prevBtn?.removeEventListener("click", onPrev);
+        nextBtn?.removeEventListener("click", onNext);
+        stage.removeEventListener("touchstart", onTouchStart);
+        stage.removeEventListener("touchend", onTouchEnd);
         document.removeEventListener("visibilitychange", onVis);
         stopAuto();
       };
@@ -531,7 +605,6 @@ const steps = [
     desktopMq.addEventListener("change", (e) => {
       teardown();
       active = -1;
-      bars.forEach((b) => b && (b.style.transform = "scaleX(0)"));
       teardown = (e.matches ? mountDesktop : mountMobile)();
     });
   }

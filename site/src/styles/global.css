@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* The pinned "How it works" layout needs vertical room, not just width — a wide
+   but short viewport (landscape tablet, short window) can't fit it. `desk` gates
+   the desktop layout on width AND height; below it, the stacked layout is used. */
+@custom-variant desk (@media (min-width: 1024px) and (min-height: 700px));
+
 /* ── Webfonts ──────────────────────────────────────────────────
    Geist + Geist Mono, self-hosted variable woff2 (Vercel's recommended
    route for non-Next projects — full glyph set, no third-party request).

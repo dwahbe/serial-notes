@@ -119,6 +119,23 @@ struct TranscriptSummarizerTests {
         }
     }
 
+    @Test("Action item sanitizer strips bullets, deduplicates with owner, and caps output")
+    func actionItemSanitizer() {
+        let items = [
+            GeneratedActionItem(task: "- Send the website homework by Sunday", owner: " Dylan "),
+            GeneratedActionItem(task: "Send the website homework by Sunday", owner: "Dylan"),
+            GeneratedActionItem(task: "Work on copy", owner: "John Paul, Lily, and Bella"),
+            GeneratedActionItem(task: "x", owner: "Jack"),
+        ]
+
+        let out = ActionItemPostProcessing.sanitize(items, maxItems: 2, minCharacters: 3)
+
+        #expect(out == [
+            ActionItem(task: "Send the website homework by Sunday", owner: "Dylan"),
+            ActionItem(task: "Work on copy", owner: "John Paul, Lily, and Bella"),
+        ])
+    }
+
     @Test("Fake summarizer: respects per-section flags")
     func fakeSummarizerFlags() async {
         let summarizer = FakeSummarizer(

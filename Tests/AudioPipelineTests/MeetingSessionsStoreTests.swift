@@ -208,6 +208,29 @@ struct MeetingSessionsStoreTests {
         }
     }
 
+    @Test("A suggested speaker remains actionable like a pending speaker")
+    func suggestedSpeakerIsPending() throws {
+        try withTempStorage { storage, voices, root in
+            let folder = "suggested-\(UUID().uuidString)"
+            let dir = try writeSession(
+                in: root, folder: folder,
+                startedAt: Date(timeIntervalSince1970: 1),
+                speakers: [makeSpeaker(label: "Person 2", index: 2, state: .suggested)]
+            )
+            let clipURL = SpeakerClipExtractor.clipURL(sessionFolder: folder, clipFile: "speaker-2.wav")
+            try FileManager.default.createDirectory(
+                at: clipURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data("fake-wav".utf8).write(to: clipURL)
+            defer { SpeakerClipExtractor.reapPendingClips(forSessionFolder: folder) }
+
+            let store = MeetingSessionsStore(storageSettings: storage, voiceStore: voices)
+            let session = try #require(store.session(at: dir))
+            #expect(session.pendingSpeakers.count == 1)
+            #expect(session.nameableSpeakers.count == 1)
+        }
+    }
+
     @Test("Renaming a Known Person to an existing name is rejected")
     func renameRejectsDuplicate() throws {
         try withTempStorage { _, voices, root in

@@ -60,4 +60,16 @@ struct TranscriptFormatterTests {
 
         #expect(TranscriptFormatter.summaryInput(from: body, cutoff: nil) == body)
     }
+
+    @Test("Replaces only the shared entry-header label token")
+    func replacesEntryHeaderLabel() {
+        let line = "**Person 1** (00:00:05): Person 1 said hello."
+        let rewritten = TranscriptFormatter.replacingEntryHeaderLabel(
+            in: line, from: "Person 1", to: "Jake"
+        )
+        #expect(rewritten == "**Jake** (00:00:05): Person 1 said hello.")
+        #expect(TranscriptFormatter.replacingEntryHeaderLabel(
+            in: line, from: "Person 2", to: "Jake"
+        ) == nil)
+    }
 }

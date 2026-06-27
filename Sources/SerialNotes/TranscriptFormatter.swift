@@ -220,4 +220,18 @@ enum TranscriptFormatter {
         let body = afterParen[close.upperBound...].drop(while: { $0 == " " })
         return (label, timestamp, String(body))
     }
+
+    /// Replace only the label token of a speaker-entry header while preserving its
+    /// timestamp and body. Keeping this beside `parseEntryHeader` makes the header
+    /// grammar a single shared contract for both post-processing paths.
+    static func replacingEntryHeaderLabel(
+        in line: String,
+        from oldLabel: String,
+        to newLabel: String
+    ) -> String? {
+        guard parseEntryHeader(line)?.label == oldLabel else { return nil }
+        let oldPrefix = "**\(oldLabel)** ("
+        guard line.hasPrefix(oldPrefix) else { return nil }
+        return "**\(newLabel)** (" + line.dropFirst(oldPrefix.count)
+    }
 }

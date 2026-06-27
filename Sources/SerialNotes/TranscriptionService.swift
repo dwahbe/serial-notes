@@ -43,10 +43,15 @@ actor TranscriptionService {
     /// Foundation Models call can't keep running into the next session.
     private var rewriteTasks: [Task<Void, Never>] = []
     private static let rewriteDrainTimeout: Duration = .seconds(5)
+    private static let leftoverSpeakerIndexOffset = 10_000
     private var cachedFinalAsrModels: AsrModels?
     private var finalAsrModelsTask: Task<AsrModels, Error>?
 
     private var pendingEntries: [TranscriptEntry] = []
+    /// The exact entries that survived the streaming/final-ASR pipeline. Retained only
+    /// through finalization so offline re-attribution never has to recover timing and
+    /// channel ownership from the lossy Markdown rendering.
+    private var finalTranscriptEntries: [TranscriptEntry] = []
     /// Names enrolled on the mic side this session. Preserved when the final render
     /// collapses the mic channel to a single primary speaker during remote calls.
     private var enrolledMicNames: Set<String> = []
@@ -149,6 +154,7 @@ actor TranscriptionService {
         self.sessionDate = sessionStart
         self.sessionDirectory = sessionDirectory
         pendingEntries = []
+        finalTranscriptEntries = []
         streamingEchoContext.reset()
         streamingEntryCount = 0
         streamingEntrySources = []
@@ -209,6 +215,11 @@ actor TranscriptionService {
         keepAudioFiles: Bool = true,
         summaryCutoff: TimeInterval? = nil,
         extractSpeakers: Bool = true,
+        performOfflineIdentity: Bool = true,
+        speakerCandidates: [SpeakerIdentityMatcher.Candidate] = [],
+        offlineIdentifier: OfflineSpeakerIdentifier? = nil,
+        offlineIdentityTimeout: Duration? = nil,
+        requirePreparedOfflineModels: Bool = false,
         onPhase: (@Sendable (FinalizationPhase) -> Void)? = nil
     ) async -> Int {
         onPhase?(.finishingTranscript)
@@ -234,20 +245,18 @@ actor TranscriptionService {
         let finalHeader = TranscriptFormatter.header(date: sessionDate ?? sessionStart ?? Date(), duration: duration)
 
         onPhase?(.improvingTranscript)
-        let replacedWithHighAccuracyTranscript = await replaceTranscriptWithHighAccuracyVersion(header: finalHeader)
+        let highAccuracyRender = await highAccuracyTranscript(header: finalHeader)
 
-        // Streaming path: rewrite header with real duration in place, then close
-        // the handle so the summary step can read the final file back.
-        if !replacedWithHighAccuracyTranscript {
-            if let handle = transcriptHandle {
-                do {
-                    try handle.seek(toOffset: 0)
-                    handle.write(Data(finalHeader.utf8))
-                } catch {
-                    onError?(error)
-                }
-            }
+        var pendingTranscriptWrite: String?
+        var needsStreamingHeaderRewrite = false
+        if let highAccuracyRender {
             try? transcriptHandle?.close()
+            transcriptHandle = nil
+            finalTranscriptEntries = highAccuracyRender.entries
+            pendingTranscriptWrite = highAccuracyRender.text
+        } else {
+            try? transcriptHandle?.close()
+            needsStreamingHeaderRewrite = true
         }
         transcriptHandle = nil
 
@@ -255,6 +264,42 @@ actor TranscriptionService {
         // action items between the header and the first entry when requested.
         var pendingSpeakerCount = 0
         if let directory = sessionDirectory {
+            // Offline identity pass: re-diarize the system audio, re-attribute the
+            // transcript's "Person N" labels to the speakers it actually finds, and
+            // build the speaker sidecar. Runs BEFORE the summary (so the summary sees
+            // the corrected labels) and before audio cleanup (it reads system.wav).
+            // Returns nil if it couldn't run (no system audio / models unavailable),
+            // in which case we fall back to the streaming-diarizer extraction below.
+            var offlinePassRan = false
+            if performOfflineIdentity, let offlineIdentifier {
+                onPhase?(.identifyingSpeakers)
+                if let count = await runOfflineIdentityPass(
+                    directory: directory,
+                    identifier: offlineIdentifier,
+                    candidates: speakerCandidates,
+                    header: finalHeader,
+                    transcriptEntries: finalTranscriptEntries,
+                    extractSpeakerClips: extractSpeakers,
+                    timeout: offlineIdentityTimeout,
+                    requirePreparedModels: requirePreparedOfflineModels
+                ) {
+                    pendingSpeakerCount = count
+                    offlinePassRan = true
+                    pendingTranscriptWrite = nil
+                    needsStreamingHeaderRewrite = false
+                }
+            }
+
+            // If the offline pass did not write a re-attributed render, put the
+            // high-accuracy transcript or final streaming header on disk now. This
+            // avoids redundant writes on the successful offline path while keeping
+            // the summary/fallback steps' "read transcript.md" contract intact.
+            if let pendingTranscriptWrite {
+                writeTranscript(pendingTranscriptWrite, in: directory)
+            } else if needsStreamingHeaderRewrite {
+                rewriteTranscriptHeader(finalHeader, in: directory)
+            }
+
             // Only announce the summary stage when the splice will actually run a
             // model call — otherwise the bar would dwell on a no-op.
             if summarySettings.generateSummary || summarySettings.generateActionItems {
@@ -267,20 +312,18 @@ actor TranscriptionService {
                 summaryCutoff: summaryCutoff
             )
             onPhase?(.wrappingUp)
-            // Extract enrollment clips for unrecognized system speakers so the user can
-            // name them afterwards. Must run after the high-accuracy render (the "Person N"
-            // labels are now authoritative) and before audio cleanup (it reads system.wav).
-            // Skipped on app quit (extractSpeakers == false) so termination isn't delayed by
-            // clip I/O for a prompt that's suppressed anyway.
-            if extractSpeakers,
+            // Streaming-diarizer fallback — only for normal stops when the offline
+            // pass didn't run (no system audio, unavailable models, or timeout).
+            // App quit keeps clip extraction off, so it skips this path too.
+            if extractSpeakers, !offlinePassRan,
                let transcript = try? String(
                    contentsOf: directory.appendingPathComponent("transcript.md"), encoding: .utf8
                ) {
                 pendingSpeakerCount = extractUnnamedSystemSpeakers(in: directory, transcript: transcript)
             }
             if !keepAudioFiles {
-                // Must run after high-accuracy ASR, summary splice, and clip extraction —
-                // all read the raw audio.
+                // Must run after high-accuracy ASR, the offline pass, summary splice, and
+                // clip extraction — all read the raw audio.
                 deleteAudioFiles(in: directory)
             }
         }
@@ -293,7 +336,296 @@ actor TranscriptionService {
         activeSessionID = nil
         enrolledMicNames = []
         micPrimaryName = "You"
+        finalTranscriptEntries = []
         return pendingSpeakerCount
+    }
+
+    // MARK: - Offline identity pass
+
+    /// Re-diarize the saved system audio into final speakers, re-attribute the
+    /// transcript's labels to them, and write the speaker sidecar. Returns the number
+    /// of speakers offered for naming (suggested + anonymous), or nil if the pass
+    /// couldn't run (no system audio / models unavailable) so the caller can fall back.
+    private func runOfflineIdentityPass(
+        directory: URL,
+        identifier: OfflineSpeakerIdentifier,
+        candidates: [SpeakerIdentityMatcher.Candidate],
+        header: String,
+        transcriptEntries: [TranscriptEntry],
+        extractSpeakerClips: Bool,
+        timeout: Duration?,
+        requirePreparedModels: Bool
+    ) async -> Int? {
+        let systemURL = directory.appendingPathComponent("system.wav")
+        guard FileManager.default.fileExists(atPath: systemURL.path) else { return nil }
+        if requirePreparedModels {
+            guard await identifier.hasLoadedModels() else {
+                NSLog("[SerialNotes/Speakers] offline identity skipped on quit: models were not prepared")
+                return nil
+            }
+        }
+
+        let identified: [IdentifiedSpeaker]
+        do {
+            if let timeout {
+                guard let result = try await Self.identifySpeakersWithTimeout(
+                    identifier: identifier,
+                    systemURL: systemURL,
+                    candidates: candidates,
+                    timeout: timeout
+                ) else {
+                    NSLog("[SerialNotes/Speakers] offline identity timed out after %.1fs; leaving transcript on the cheaper finalized path",
+                          timeout.secondsValue)
+                    return nil
+                }
+                identified = result
+            } else {
+                identified = try await identifier.identifySpeakers(inRecordingAt: systemURL, candidates: candidates)
+            }
+        } catch {
+            NSLog("[SerialNotes/Speakers] offline identity pass failed: \(error.localizedDescription)")
+            return nil
+        }
+        // An empty output is not a successful identity pass: the streaming diarizer
+        // can still offer clips for short speakers that the offline 20-second noise
+        // floor intentionally excludes.
+        guard !identified.isEmpty else { return nil }
+
+        // Re-attribute only the system entries, using their exact ASR times before
+        // Markdown truncates them to whole seconds. This also makes mic exclusion
+        // source-based rather than coupled to a particular display-name set.
+        let reattribution = SpeakerReattribution.reattributeEntries(transcriptEntries, speakers: identified)
+        let reattributedEntries = reattribution.entries
+        let reattributedTranscript = renderEntries(header: header, entries: reattributedEntries)
+        guard writeTranscript(reattributedTranscript, in: directory) else { return nil }
+
+        guard extractSpeakerClips else { return 0 }
+        return writeOfflineSidecar(
+            directory: directory,
+            identified: identified,
+            transcriptEntries: reattributedEntries,
+            systemURL: systemURL,
+            leftoverLabelsByOriginalLabel: reattribution.leftoverLabelsByOriginalLabel
+        )
+    }
+
+    private nonisolated static func identifySpeakersWithTimeout(
+        identifier: OfflineSpeakerIdentifier,
+        systemURL: URL,
+        candidates: [SpeakerIdentityMatcher.Candidate],
+        timeout: Duration
+    ) async throws -> [IdentifiedSpeaker]? {
+        let work = Task.detached(priority: .utility) {
+            try await identifier.identifySpeakers(inRecordingAt: systemURL, candidates: candidates)
+        }
+        let outcome = await withCheckedContinuation { continuation in
+            let gate = OfflineIdentityRaceGate(continuation)
+            Task {
+                do {
+                    await gate.resume(.success(try await work.value))
+                } catch {
+                    await gate.resume(.failure(SendableError(error: error)))
+                }
+            }
+            Task {
+                do {
+                    try await Task.sleep(for: timeout)
+                    await gate.resume(.timedOut)
+                } catch {
+                    // The sleeper is intentionally best-effort; cancellation means
+                    // some other outcome already won or the process is terminating.
+                }
+            }
+        }
+
+        switch outcome {
+        case let .success(speakers):
+            return speakers
+        case let .failure(error):
+            throw error.error
+        case .timedOut:
+            work.cancel()
+            return nil
+        }
+    }
+
+    /// Turn the offline pass's speakers into a `speakers.json` sidecar (+ clips for the
+    /// ones the user can name). Confirmed matches are already named in the transcript,
+    /// so they're recorded as `.named` without a clip; suggested/anonymous get a clip
+    /// and are offered. Returns the count offered (suggested + anonymous).
+    private func writeOfflineSidecar(
+        directory: URL,
+        identified: [IdentifiedSpeaker],
+        transcriptEntries: [TranscriptEntry],
+        systemURL: URL,
+        leftoverLabelsByOriginalLabel: [String: String]
+    ) -> Int {
+        guard let sampleRate = SpeakerClipExtractor.sampleRate(of: systemURL), sampleRate > 0 else { return 0 }
+        let sessionFolder = directory.lastPathComponent
+        var labelsByClusterID: [String: String] = [:]
+        for labeled in SpeakerReattribution.labelSpeakers(identified) {
+            if labelsByClusterID[labeled.clusterID] == nil {
+                labelsByClusterID[labeled.clusterID] = labeled.label
+            } else {
+                NSLog("[SerialNotes/Speakers] duplicate offline cluster id %@ while labeling speakers; keeping first label",
+                      labeled.clusterID)
+            }
+        }
+
+        var detected: [DetectedSpeaker] = []
+        var nameableCount = 0
+        for (index, speaker) in identified.enumerated() {
+            let totalSpeech = speaker.cluster.totalSpeechSeconds
+            guard totalSpeech >= SpeakerClipExtractor.minSpeechSeconds else { continue }
+            guard let label = labelsByClusterID[speaker.cluster.id] else {
+                assertionFailure("Offline speaker label missing for cluster \(speaker.cluster.id)")
+                continue
+            }
+            let allSegments = speaker.cluster.segments.map { Segment(start: $0.start, end: $0.end) }
+
+            // Only offer speech that remains in the final transcript. The final ASR
+            // echo filter can intentionally remove a local voice looped into the
+            // system channel; do not turn that removed echo into a phantom profile.
+            let matchingEntries = SpeakerClipExtractor.survivingSystemEntries(
+                for: label, in: transcriptEntries
+            )
+            guard !matchingEntries.isEmpty else { continue }
+            let segs = SpeakerClipExtractor.segmentsCovering(
+                allSegments, timestamps: matchingEntries.map(\.timestamp)
+            )
+            let survivingSpeech = segs.reduce(0) { $0 + $1.duration }
+            guard survivingSpeech >= SpeakerClipExtractor.minSpeechSeconds else { continue }
+
+            let state: SpeakerState
+            let resolved: String?
+            let suggested: String?
+            switch speaker.decision {
+            case let .confirmed(_, name, _): state = .named; resolved = name; suggested = nil
+            case let .suggested(_, name, _): state = .suggested; resolved = nil; suggested = name
+            case .anonymous: state = .pending; resolved = nil; suggested = nil
+            }
+
+            // Only speakers the user might name need an extracted clip.
+            var clipFile = ""
+            if state != .named {
+                let frames = SpeakerClipExtractor.clipFrames(forSegments: segs, sampleRate: sampleRate)
+                guard !frames.isEmpty else { continue }
+                clipFile = SpeakerClipExtractor.clipFileName(forSpeakerIndex: index)
+                let clipURL = SpeakerClipExtractor.clipURL(sessionFolder: sessionFolder, clipFile: clipFile)
+                do {
+                    try SpeakerClipExtractor.writeClip(from: systemURL, frames: frames, to: clipURL)
+                } catch {
+                    NSLog("[SerialNotes/Speakers] clip extract failed for \(label): \(error.localizedDescription)")
+                    continue
+                }
+            }
+
+            detected.append(DetectedSpeaker(
+                label: label,
+                speakerIndex: index,
+                totalSpeechSeconds: survivingSpeech,
+                sampleRate: sampleRate,
+                segments: segs,
+                sampleText: SpeakerClipExtractor.truncated(
+                    matchingEntries.map(\.text).max(by: { $0.count < $1.count }) ?? "",
+                    to: 140
+                ),
+                clipFile: clipFile,
+                state: state,
+                resolvedName: resolved,
+                suggestedName: suggested))
+            if state == .pending || state == .suggested {
+                nameableCount += 1
+            }
+        }
+
+        let leftoverDetected = extractLeftoverStreamingSpeakers(
+            directory: directory,
+            transcriptEntries: transcriptEntries,
+            originalToLeftoverLabel: leftoverLabelsByOriginalLabel,
+            systemURL: systemURL,
+            sampleRate: sampleRate
+        )
+        detected.append(contentsOf: leftoverDetected)
+        nameableCount += leftoverDetected.count
+
+        // A fully-confirmed meeting needs no naming UI — skip the sidecar entirely.
+        guard detected.contains(where: { $0.state != .named }) else { return 0 }
+        detected.sort { $0.speakerIndex < $1.speakerIndex }
+        let sidecar = SpeakerSidecar(
+            version: SpeakerSidecar.currentVersion,
+            sessionStartedAt: sessionStart ?? sessionDate ?? Date(),
+            speakers: detected)
+        do {
+            try SpeakerClipExtractor.writeSidecar(sidecar, inSessionDirectory: directory)
+        } catch {
+            NSLog("[SerialNotes/Speakers] failed to write speakers.json: \(error.localizedDescription)")
+            SpeakerClipExtractor.reapPendingClips(forSessionFolder: sessionFolder)
+            return 0
+        }
+        return nameableCount
+    }
+
+    private func extractLeftoverStreamingSpeakers(
+        directory: URL,
+        transcriptEntries: [TranscriptEntry],
+        originalToLeftoverLabel: [String: String],
+        systemURL: URL,
+        sampleRate: Double
+    ) -> [DetectedSpeaker] {
+        guard !originalToLeftoverLabel.isEmpty,
+              let systemState = sideStates[.system],
+              let diarizer = systemState.diarizer else { return [] }
+
+        let sessionFolder = directory.lastPathComponent
+        var detected: [DetectedSpeaker] = []
+        for speaker in diarizer.timeline.speakers.values.sorted(by: { $0.index < $1.index }) {
+            guard speaker.name == nil,
+                  let originalLabel = systemState.speakerLabels[speaker.index],
+                  let leftoverLabel = originalToLeftoverLabel[originalLabel] else { continue }
+
+            let matchingEntries = SpeakerClipExtractor.survivingSystemEntries(
+                for: leftoverLabel, in: transcriptEntries
+            )
+            guard !matchingEntries.isEmpty else { continue }
+
+            let allSegments = (speaker.finalizedSegments + speaker.tentativeSegments)
+                .map { Segment(start: Double($0.startTime), end: Double($0.endTime)) }
+            let survivingSegments = SpeakerClipExtractor.segmentsCovering(
+                allSegments, timestamps: matchingEntries.map(\.timestamp)
+            )
+            let survivingDuration = survivingSegments.reduce(0) { $0 + $1.duration }
+            guard survivingDuration >= SpeakerClipExtractor.minSpeechSeconds else { continue }
+
+            let frames = SpeakerClipExtractor.clipFrames(forSegments: survivingSegments, sampleRate: sampleRate)
+            guard !frames.isEmpty else { continue }
+
+            let sidecarIndex = Self.leftoverSpeakerIndexOffset + speaker.index
+            let clipFile = SpeakerClipExtractor.clipFileName(forSpeakerIndex: sidecarIndex)
+            let clipURL = SpeakerClipExtractor.clipURL(sessionFolder: sessionFolder, clipFile: clipFile)
+            do {
+                try SpeakerClipExtractor.writeClip(from: systemURL, frames: frames, to: clipURL)
+            } catch {
+                NSLog("[SerialNotes/Speakers] failed to extract leftover clip for \(leftoverLabel): \(error.localizedDescription)")
+                continue
+            }
+
+            detected.append(DetectedSpeaker(
+                label: leftoverLabel,
+                speakerIndex: sidecarIndex,
+                totalSpeechSeconds: survivingDuration,
+                sampleRate: sampleRate,
+                segments: survivingSegments,
+                sampleText: SpeakerClipExtractor.truncated(
+                    matchingEntries.map(\.text).max(by: { $0.count < $1.count }) ?? "",
+                    to: 140
+                ),
+                clipFile: clipFile,
+                state: .pending,
+                resolvedName: nil
+            ))
+        }
+        return detected
     }
 
     /// Cut a short enrollment clip for each unrecognized system-side speaker (`name == nil`)
@@ -776,6 +1108,7 @@ actor TranscriptionService {
             data.append(Data(line.utf8))
             streamingEntryCount += 1
             streamingEntrySources.insert(entry.source)
+            finalTranscriptEntries.append(entry)
         }
         if !data.isEmpty {
             handle.write(data)
@@ -783,29 +1116,26 @@ actor TranscriptionService {
         lastFlushedTimestamp = newestProcessedTimestamp
     }
 
-    private func replaceTranscriptWithHighAccuracyVersion(header: String) async -> Bool {
-        guard let sessionDirectory else { return false }
+    /// Build a high-accuracy render if it covers every source the streaming
+    /// transcript captured. The caller owns writing it so the offline identity pass
+    /// can replace labels from the returned exact entries before summaries are made.
+    private func highAccuracyTranscript(header: String) async -> RenderedTranscript? {
+        guard let sessionDirectory else { return nil }
 
         do {
             let entries = try await highAccuracyTranscriptEntries(sessionDirectory: sessionDirectory)
-            guard !entries.isEmpty else { return false }
+            guard !entries.isEmpty else { return nil }
 
             let rendered = renderTranscript(header: header, entries: entries)
-            guard rendered.entryCount > 0, rendered.text != header else { return false }
+            guard rendered.entryCount > 0, rendered.text != header else { return nil }
             guard shouldReplaceStreamingTranscript(with: rendered) else {
                 NSLog("[SerialNotes/Transcription] keeping streaming transcript because final pass missed a recorded source")
-                return false
+                return nil
             }
-
-            try transcriptHandle?.close()
-            transcriptHandle = nil
-
-            let transcriptURL = sessionDirectory.appendingPathComponent("transcript.md")
-            try rendered.text.write(to: transcriptURL, atomically: true, encoding: .utf8)
-            return true
+            return rendered
         } catch {
             NSLog("[SerialNotes/Transcription] high-accuracy final transcript skipped: \(error.localizedDescription)")
-            return false
+            return nil
         }
     }
 
@@ -866,10 +1196,6 @@ actor TranscriptionService {
     }
 
     private func renderTranscript(header: String, entries: [TranscriptEntry]) -> RenderedTranscript {
-        var transcript = header
-        var renderedEntryCount = 0
-        var renderedSources = Set<AudioSide>()
-
         // The final pass holds every entry, so we can use dominance-aware
         // cross-channel echo removal instead of the streaming path's incremental,
         // one-directional heuristic — this also catches system-side echo of the
@@ -895,16 +1221,54 @@ actor TranscriptionService {
             enrolledMicNames: enrolledMicNames
         )
 
-        for entry in kept {
+        return RenderedTranscript(
+            text: renderEntries(header: header, entries: kept),
+            entryCount: kept.count,
+            sources: Set(kept.map(\.source)),
+            entries: kept
+        )
+    }
+
+    /// Render an already-filtered/attributed set of exact entries without applying
+    /// echo filtering again. Used after offline re-attribution, which must preserve
+    /// the final render's source membership while only changing system labels.
+    private func renderEntries(header: String, entries: [TranscriptEntry]) -> String {
+        var transcript = header
+        for entry in entries.sorted() {
             transcript += TranscriptFormatter.entry(
                 speaker: entry.speaker,
                 timestamp: entry.timestamp,
                 text: entry.text
             )
-            renderedEntryCount += 1
-            renderedSources.insert(entry.source)
         }
-        return RenderedTranscript(text: transcript, entryCount: renderedEntryCount, sources: renderedSources)
+        return transcript
+    }
+
+    @discardableResult
+    private func writeTranscript(_ text: String, in directory: URL?) -> Bool {
+        guard let directory else { return false }
+        do {
+            try text.write(
+                to: directory.appendingPathComponent("transcript.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            return true
+        } catch {
+            onError?(error)
+            return false
+        }
+    }
+
+    private func rewriteTranscriptHeader(_ header: String, in directory: URL) {
+        do {
+            let handle = try FileHandle(forWritingTo: directory.appendingPathComponent("transcript.md"))
+            defer { try? handle.close() }
+            try handle.seek(toOffset: 0)
+            handle.write(Data(header.utf8))
+        } catch {
+            onError?(error)
+        }
     }
 
     private func shouldReplaceStreamingTranscript(with rendered: RenderedTranscript) -> Bool {
@@ -1074,6 +1438,39 @@ private struct RenderedTranscript {
     let text: String
     let entryCount: Int
     let sources: Set<AudioSide>
+    let entries: [TranscriptEntry]
+}
+
+private struct SendableError: @unchecked Sendable {
+    let error: any Error
+}
+
+private enum OfflineIdentityRaceOutcome: Sendable {
+    case success([IdentifiedSpeaker])
+    case failure(SendableError)
+    case timedOut
+}
+
+private actor OfflineIdentityRaceGate {
+    private var didResume = false
+    private let continuation: CheckedContinuation<OfflineIdentityRaceOutcome, Never>
+
+    init(_ continuation: CheckedContinuation<OfflineIdentityRaceOutcome, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ outcome: OfflineIdentityRaceOutcome) {
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume(returning: outcome)
+    }
+}
+
+private extension Duration {
+    var secondsValue: Double {
+        let components = components
+        return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
 }
 
 // TranscriptEntry + EchoSuppressionContext live in EchoSuppressionContext.swift —

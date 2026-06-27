@@ -140,7 +140,16 @@ struct SerialNotesApp: App {
         // this launch is probably about to defer to it, and the survivor owns
         // the (shared-cache) download. The delegate re-kicks it if this launch
         // wins its conflict instead.
-        let kickoffModelDownload = { Task { @MainActor in await modelState.downloadIfNeeded() } }
+        let kickoffModelDownload = {
+            Task { @MainActor in
+                // The offline identity models are distinct from the streaming ASR
+                // bundle. Warm both at launch so Stop never becomes their first
+                // download/compilation opportunity.
+                async let streamingModels: Void = modelState.downloadIfNeeded()
+                async let offlineModels: Void = recording.prepareOfflineIdentityModels()
+                _ = await (streamingModels, offlineModels)
+            }
+        }
         if SingleInstanceGuard.anotherInstanceIsRunning() {
             appDelegate.deferredModelDownload = { _ = kickoffModelDownload() }
         } else {

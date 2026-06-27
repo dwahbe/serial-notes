@@ -149,7 +149,37 @@ final class VoiceProfileStore {
         if FileManager.default.fileExists(atPath: clip.path) {
             try FileManager.default.removeItem(at: clip)
         }
+        // Best-effort: a stale embedding for a deleted profile is harmless, but
+        // reaping it keeps the directory tidy and avoids a future UUID collision.
+        try? FileManager.default.removeItem(at: embeddingURL(for: profile.id))
         reload()
+    }
+
+    // MARK: - Speaker embeddings (offline identity matching)
+
+    /// The cached embedding for a profile, or nil if none is stored or it was
+    /// produced by an older model version (in which case it should be recomputed
+    /// from the enrollment clip). A re-enrolled profile gets a fresh UUID, so a
+    /// stored embedding can never belong to a different clip than its profile.
+    func embedding(for profile: VoiceProfile) -> [Float]? {
+        guard let data = try? Data(contentsOf: embeddingURL(for: profile.id)),
+              let stored = try? JSONDecoder().decode(VoiceEmbedding.self, from: data) else {
+            return nil
+        }
+        return stored.current
+    }
+
+    /// Persist a freshly computed embedding for a profile (tagged with the
+    /// current model version). Best-effort — a failure just means it's recomputed
+    /// next time.
+    func saveEmbedding(_ vector: [Float], for profile: VoiceProfile) {
+        guard let data = try? JSONEncoder().encode(VoiceEmbedding(vector: vector)) else { return }
+        try? data.write(to: embeddingURL(for: profile.id), options: .atomic)
+    }
+
+    /// The on-disk enrollment clip for a profile, used to compute its speaker embedding.
+    func clipURL(for profile: VoiceProfile) -> URL {
+        clipURL(for: profile.id)
     }
 
     // MARK: - Audio loading (for priming diarizers)
@@ -193,6 +223,10 @@ final class VoiceProfileStore {
 
     private func clipURL(for id: UUID) -> URL {
         directory.appendingPathComponent("\(id.uuidString).wav")
+    }
+
+    private func embeddingURL(for id: UUID) -> URL {
+        directory.appendingPathComponent("\(id.uuidString).embedding")
     }
 
     func revealInFinder() {

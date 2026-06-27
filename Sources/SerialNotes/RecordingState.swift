@@ -27,6 +27,10 @@ final class RecordingState {
     /// the pending-speaker count. Suppressed on `.appQuit`.
     @ObservationIgnored var onUnnamedSpeakers: (@MainActor (URL, Int) -> Void)?
     @ObservationIgnored weak var voiceProfileStore: VoiceProfileStore?
+
+    /// Shared offline speaker identifier — owns the post-meeting re-diarization +
+    /// embedding models (downloaded once, reused across meetings).
+    @ObservationIgnored private let offlineIdentifier = OfflineSpeakerIdentifier()
     @ObservationIgnored weak var summarySettings: SummarySettings?
     @ObservationIgnored weak var storageSettings: StorageSettings?
     @ObservationIgnored weak var identitySettings: IdentitySettings?
@@ -37,6 +41,12 @@ final class RecordingState {
     private var currentSessionDir: URL?
     @ObservationIgnored private var finalizationTask: Task<Void, Never>?
     @ObservationIgnored private var pendingMeetingDiagnostics: MeetingSessionDiagnostics?
+    /// Candidate embeddings are prepared during the recording, rather than serially
+    /// after Stop. Finalization only waits here when a very short session ends before
+    /// the preparation task can finish.
+    @ObservationIgnored private var speakerCandidatePreparationTask: Task<Void, Never>?
+    @ObservationIgnored private var preparedSpeakerCandidates: [SpeakerIdentityMatcher.Candidate] = []
+    private static let appQuitOfflineIdentityTimeout: Duration = .seconds(6)
     private let captureService = AudioCaptureService()
     let transcriptionService = TranscriptionService()
 
@@ -115,6 +125,8 @@ final class RecordingState {
                 summarySettings: summarySnapshot,
                 micPrimaryName: micDisplayName
             )
+
+            prepareSpeakerCandidatesForCurrentSession()
 
             // Wire audio buffer callbacks for transcription.
             let transcriber = transcriptionService
@@ -226,13 +238,24 @@ final class RecordingState {
     private func finishStop(_ context: StopContext) async {
         await stopCapture()
         let stats = captureService.currentStats()
+        // Candidate embeddings normally finish during recording. Both stop paths
+        // await any remaining work before the identity pass. Quit uses only the
+        // already-prepared snapshot so a first-use enrollment embedding cannot block
+        // termination behind an uncancellable offline diarization.
+        let isAppQuit = context.stopReason.isAppQuit
+        let candidates = await speakerCandidatesForStop(isAppQuit: isAppQuit)
         let pendingSpeakers = await transcriptionService.endSession(
             summarySettings: context.summarySettings,
             keepAudioFiles: context.keepAudioFiles,
             summaryCutoff: context.summaryCutoff,
-            // On app quit the prompt is suppressed anyway — skip clip extraction so
-            // termination isn't delayed by writing WAVs the user won't see.
-            extractSpeakers: !context.stopReason.isAppQuit,
+            // App quit still applies known identities when models/candidates are
+            // available, but continues to skip clip extraction and naming UI.
+            extractSpeakers: !isAppQuit,
+            performOfflineIdentity: true,
+            speakerCandidates: candidates,
+            offlineIdentifier: offlineIdentifier,
+            offlineIdentityTimeout: isAppQuit ? Self.appQuitOfflineIdentityTimeout : nil,
+            requirePreparedOfflineModels: isAppQuit,
             onPhase: { [weak self] phase in
                 Task { @MainActor in self?.finalizationPhase = phase }
             }
@@ -243,6 +266,9 @@ final class RecordingState {
         )
         notifyUnnamedSpeakersIfNeeded(context: context, count: pendingSpeakers)
         exportIfNeeded(context)
+        speakerCandidatePreparationTask?.cancel()
+        speakerCandidatePreparationTask = nil
+        preparedSpeakerCandidates = []
     }
 
     /// Push the finalized transcript into any enabled notes apps (Apple Notes /
@@ -361,20 +387,100 @@ final class RecordingState {
 
     private func loadEnrollments(micDisplayName: String) -> [EnrollmentClip] {
         guard let store = voiceProfileStore else { return [] }
+        // Only the user's own voice (`.you`) is primed into the *live* diarizer.
+        // Other people's profiles are matched after the meeting by the offline
+        // identity pass, which has a cosine score + rejection threshold — the live
+        // LS-EEND diarizer has neither (it tracks speakers by fixed neural slots),
+        // so priming a name here can route a brand-new voice into an enrolled slot
+        // and mislabel a stranger as a known participant. The mic voice is labelled
+        // with the *current* preferred name, not the one baked in at enrollment, so
+        // it can be changed in Settings without re-enrolling.
         return store.profiles.compactMap { profile -> EnrollmentClip? in
+            guard profile.kind == .you else { return nil }
             guard let clip = store.loadClipSamples(for: profile) else { return nil }
-            let side: AudioSide = profile.kind == .you ? .mic : .system
-            // Label the user's own voice with their current preferred name rather
-            // than the name baked into the profile at enrollment time — the name
-            // can be changed in Settings after recording without re-enrolling.
-            let name = profile.kind == .you ? micDisplayName : profile.name
             return EnrollmentClip(
-                name: name,
-                side: side,
+                name: micDisplayName,
+                side: .mic,
                 samples: clip.samples,
                 sampleRate: clip.sampleRate
             )
         }
+    }
+
+    /// Begin computing any missing profile embeddings while the meeting is in
+    /// progress. Cached embeddings are immediately available; only first-use clips
+    /// incur diarization work, and that work is shared with offline model preloading.
+    private func prepareSpeakerCandidatesForCurrentSession() {
+        speakerCandidatePreparationTask?.cancel()
+        preparedSpeakerCandidates = cachedSpeakerCandidates()
+        speakerCandidatePreparationTask = Task { [weak self] in
+            guard let self else { return }
+            let candidates = await self.buildSpeakerCandidates()
+            guard !Task.isCancelled else { return }
+            self.preparedSpeakerCandidates = candidates
+        }
+    }
+
+    /// Resolve candidates for the current stop. This normally returns immediately
+    /// because preparation began at session start. App quit is deliberately bounded:
+    /// use the snapshot already prepared and cancel any first-use embedding work.
+    private func speakerCandidatesForStop(isAppQuit: Bool) async -> [SpeakerIdentityMatcher.Candidate] {
+        if isAppQuit {
+            speakerCandidatePreparationTask?.cancel()
+            return preparedSpeakerCandidates
+        }
+        await speakerCandidatePreparationTask?.value
+        return preparedSpeakerCandidates
+    }
+
+    private func cachedSpeakerCandidates() -> [SpeakerIdentityMatcher.Candidate] {
+        guard let store = voiceProfileStore else { return [] }
+        return store.otherProfiles.compactMap { profile in
+            guard let embedding = store.embedding(for: profile) else { return nil }
+            return .init(profileID: profile.id, name: profile.name, embedding: embedding)
+        }
+    }
+
+    /// Warm the offline model bundle at launch. Failure is logged and retried later
+    /// under the identifier's shared cooldown; it must never block normal recording.
+    func prepareOfflineIdentityModels() async {
+        do {
+            try await offlineIdentifier.prepareModels()
+        } catch {
+            NSLog("[SerialNotes/Speakers] offline model preload failed: %@", error.localizedDescription)
+        }
+    }
+
+    /// Build identity-match candidates from saved `.other` voice profiles, computing
+    /// (and caching) each one's speaker embedding from its enrollment clip on first use.
+    /// The embedding work runs off the main actor via the offline identifier.
+    private func buildSpeakerCandidates() async -> [SpeakerIdentityMatcher.Candidate] {
+        guard let store = voiceProfileStore else { return [] }
+        let others = store.otherProfiles
+        guard !others.isEmpty else { return [] }
+
+        var candidates: [SpeakerIdentityMatcher.Candidate] = []
+        for profile in others {
+            let embedding: [Float]
+            if let cached = store.embedding(for: profile) {
+                embedding = cached
+            } else {
+                do {
+                    guard let computed = try await offlineIdentifier.enrollmentEmbedding(forClipAt: store.clipURL(for: profile)) else {
+                        NSLog("[SerialNotes/Speakers] no usable enrollment speech for %@", profile.name)
+                        continue
+                    }
+                    store.saveEmbedding(computed, for: profile)
+                    embedding = computed
+                } catch {
+                    NSLog("[SerialNotes/Speakers] failed to build enrollment embedding for %@: %@",
+                          profile.name, error.localizedDescription)
+                    continue
+                }
+            }
+            candidates.append(.init(profileID: profile.id, name: profile.name, embedding: embedding))
+        }
+        return candidates
     }
 
     private static func sessionDirectoryName() -> String {

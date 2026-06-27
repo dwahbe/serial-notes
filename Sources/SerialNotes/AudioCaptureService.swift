@@ -39,6 +39,9 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
     // Fallback for when process tap is unavailable
     private var stream: SCStream?
+    /// Session dir for the SCK path's lazily-created system.wav (see
+    /// `ensureSystemFileForSCK`). Set when SCK starts, cleared on stop.
+    private var sckSystemFileDir: URL?
 
     private var onError: (@Sendable (Error) -> Void)?
 
@@ -89,6 +92,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         lock.withLock {
             systemAudioFile = nil
             micAudioFile = nil
+            sckSystemFileDir = nil
         }
         onError = nil
         onSystemAudioBuffer = nil
@@ -143,10 +147,19 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
             NSLog("[SerialNotes/Capture] failed to query agg input format status=\(formatStatus) sr=\(streamFormat.mSampleRate) ch=\(streamFormat.mChannelsPerFrame)")
             throw AudioCaptureError.audioUnitConfigFailed
         }
-        let sourceSampleRate = streamFormat.mSampleRate
+        // The stream format tells us channel layout + interleaving, but its sample
+        // rate can be a stale advertised value that doesn't match what the IOProc
+        // actually delivers: with Bluetooth output (e.g. AirPods) the device clocks
+        // at 24 kHz while the stream format still reports 48 kHz. The IOProc delivers
+        // at the aggregate's *nominal* (running) rate, so trust that for the write
+        // header — a wrong rate writes every system.wav at the wrong speed (pitched
+        // up) and feeds time-warped audio to the diarizer + ASR.
+        let streamFormatRate = streamFormat.mSampleRate
+        let nominalRate = Self.nominalSampleRate(of: aggDeviceID)
+        let sourceSampleRate = nominalRate ?? streamFormatRate
         let sourceChannels = AVAudioChannelCount(streamFormat.mChannelsPerFrame)
         let sourceIsInterleaved = (streamFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
-        NSLog("[SerialNotes/Capture] agg input format sr=\(sourceSampleRate) ch=\(sourceChannels) interleaved=\(sourceIsInterleaved) flags=\(streamFormat.mFormatFlags)")
+        NSLog("[SerialNotes/Capture] agg format: streamFormatRate=\(streamFormatRate) nominalRate=\(nominalRate.map { String($0) } ?? "nil") ch=\(sourceChannels) interleaved=\(sourceIsInterleaved) → using \(sourceSampleRate)")
 
         // Write file format: mono float32 at the source rate.
         let writeFormat = AVAudioFormat(
@@ -243,18 +256,14 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
             throw AudioCaptureError.noDisplayFound
         }
 
-        let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.sampleRate,
-            channels: Self.channelCount,
-            interleaved: false
-        )!
-
-        let systemFile = try AVAudioFile(
-            forWriting: sessionDir.appendingPathComponent("system.wav"),
-            settings: outputFormat.settings
-        )
-        lock.withLock { systemAudioFile = systemFile }
+        // system.wav is created lazily on the first delivered sample buffer
+        // (ensureSystemFileForSCK) so its header is stamped with the rate SCK
+        // *actually* delivers. The config below only *requests* Self.sampleRate;
+        // SCK can deliver something else — notably 24 kHz on Bluetooth/HFP "call
+        // mode" — and a hardcoded 48 kHz header would write system.wav at the
+        // wrong speed (pitched up) and time-warp the diarizer + ASR input. This
+        // mirrors the process-tap path trusting the nominal (delivered) rate.
+        lock.withLock { sckSystemFileDir = sessionDir }
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
@@ -424,11 +433,60 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         let bytesToCopy = min(dataLength, Int(pcmBuffer.frameLength) * Int(format.streamDescription.pointee.mBytesPerFrame))
         memcpy(destPtr, dataPointer, bytesToCopy)
 
+        // System audio (SCK path) creates system.wav lazily so the file header
+        // is stamped with the rate actually delivered, not the requested 48 kHz.
+        if keyPath == \AudioCaptureService.systemAudioFile {
+            ensureSystemFileForSCK(matching: format)
+        }
         writeBuffer(pcmBuffer, for: keyPath)
 
         if let callback {
             callback(CapturedAudioBuffer(buffer: pcmBuffer))
         }
+    }
+
+    /// Lazily create the SCK path's `system.wav` using the rate SCK *actually*
+    /// delivers. The `SCStreamConfiguration` only requests `Self.sampleRate`;
+    /// SCK can resample to something else (notably 24 kHz on Bluetooth/HFP "call
+    /// mode"), and stamping the header with the delivered rate keeps playback
+    /// duration honest so the diarizer + ASR second pass aren't time-warped.
+    /// Channels stay mono (the stream is configured for one channel and the
+    /// delivered buffers are mono) — only the rate is taken from the buffer.
+    private func ensureSystemFileForSCK(matching deliveredFormat: AVAudioFormat) {
+        lock.withLock {
+            guard systemAudioFile == nil, let dir = sckSystemFileDir else { return }
+            let writeFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: deliveredFormat.sampleRate,
+                channels: Self.channelCount,
+                interleaved: false
+            ) ?? deliveredFormat
+            do {
+                systemAudioFile = try AVAudioFile(
+                    forWriting: dir.appendingPathComponent("system.wav"),
+                    settings: writeFormat.settings
+                )
+                NSLog("[SerialNotes/Capture] SCK system.wav created at delivered rate \(deliveredFormat.sampleRate)")
+            } catch {
+                onError?(error)
+            }
+        }
+    }
+
+    /// The device's nominal (running) sample rate — the true rate its IOProc
+    /// delivers at. Preferred over a stream-format rate, which can advertise a
+    /// stale value (notably Bluetooth output running at 24 kHz while reporting 48 kHz).
+    private static func nominalSampleRate(of deviceID: AudioDeviceID) -> Double? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate)
+        guard status == noErr, rate > 0 else { return nil }
+        return rate
     }
 
     private static func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

@@ -2,7 +2,7 @@ import Foundation
 @preconcurrency import FoundationModels
 
 /// One action item extracted from a transcript. `owner` is non-nil only when
-/// the transcript explicitly names a person — never inferred.
+/// the transcript explicitly names a responsible person or group — never inferred.
 struct ActionItem: Sendable, Equatable {
     let task: String
     let owner: String?
@@ -63,13 +63,13 @@ struct MeetingSummary {
 struct GeneratedActionItem {
     @Guide(description: "What needs to be done, in one short sentence.")
     let task: String
-    @Guide(description: "The person responsible if the transcript explicitly names them. Empty string if no owner was named — never infer.")
+    @Guide(description: "The responsible person or group if explicitly named, such as 'Dylan', 'Everyone', or 'John, Lily, and Bella'. Empty string if no owner was named — never infer.")
     let owner: String
 }
 
 @Generable
 struct GeneratedActionItemList {
-    @Guide(description: "Concrete action items mentioned in the transcript. Empty list when nothing was committed to.")
+    @Guide(description: "Final consolidated future-work action items. Empty list when nothing was committed to.")
     let items: [GeneratedActionItem]
 }
 
@@ -85,13 +85,17 @@ actor FoundationModelsSummarizer: TranscriptSummarizer {
         """
 
     private static let actionItemInstructions = """
-        You extract concrete action items from speaker-labeled meeting \
-        transcripts. An action item is something a participant committed to \
-        doing after the meeting. Only include items explicitly stated. For \
-        each item, set 'owner' to the participant's name if and only if they \
-        were explicitly named as responsible — otherwise leave 'owner' as an \
-        empty string. Do not infer owners from context. Return an empty list \
-        when nothing was committed to.
+        You extract final, concrete action items from speaker-labeled meeting \
+        transcripts. An action item is future work someone committed to after \
+        the meeting, not an in-meeting facilitation step, discussion prompt, \
+        draft idea, or already-completed activity. Prefer the final decision \
+        or assignment over earlier brainstorming. Merge repeated mentions and \
+        near-duplicates into one clear item. If the transcript assigns one task \
+        to a group, return one group-owned item rather than one item per person. \
+        Preserve deadlines when stated. For each item, set 'owner' only when \
+        the transcript explicitly names the responsible person or group — \
+        otherwise leave 'owner' empty. Do not infer owners from context. Return \
+        a short list; return an empty list when nothing was committed to.
         """
 
     private static let perCallTimeout: Duration = .seconds(15)
@@ -108,6 +112,7 @@ actor FoundationModelsSummarizer: TranscriptSummarizer {
     private static let chunkTokenSafetyFactor = 0.9
     private static let minChunkWords = 200
     private static let maxSummaryBullets = 6
+    private static let maxActionItems = 12
     private static let minBulletCharacters = 3
 
     /// Sessions are stateful — every `respond` appends to the session's own
@@ -250,7 +255,25 @@ actor FoundationModelsSummarizer: TranscriptSummarizer {
         for chunk in chunks {
             collected.append(contentsOf: await requestActionItems(chunk))
         }
-        return sanitizeActionItems(collected)
+        let sanitized = sanitizeActionItems(collected)
+        guard sanitized.count > 1 else { return sanitized }
+
+        let joined = sanitized.enumerated().map { index, item in
+            let owner = item.owner.map { "[\($0)] " } ?? ""
+            return "\(index + 1). \(owner)\(item.task)"
+        }.joined(separator: "\n")
+        let reducePrompt = """
+            Consolidate these candidate action items into the final meeting action \
+            item list. Merge duplicates and near-duplicates. Prefer the final \
+            commitment over earlier exploratory wording. Remove in-meeting \
+            facilitation steps or tasks already completed during the call. If \
+            several people share one assignment, keep it as one group-owned item. \
+            Keep deadlines. Return only final future work.
+
+            \(joined)
+            """
+        let reduced = sanitizeActionItems(await requestActionItems(reducePrompt))
+        return reduced.isEmpty ? sanitized : reduced
     }
 
     private func requestActionItems(_ text: String) async -> [GeneratedActionItem] {
@@ -277,22 +300,38 @@ actor FoundationModelsSummarizer: TranscriptSummarizer {
     }
 
     private func sanitizeActionItems(_ items: [GeneratedActionItem]) -> [ActionItem] {
+        ActionItemPostProcessing.sanitize(items, maxItems: Self.maxActionItems, minCharacters: Self.minBulletCharacters)
+    }
+
+    private func stripBulletPrefix(_ s: String) -> String {
+        ActionItemPostProcessing.stripBulletPrefix(s)
+    }
+
+}
+
+enum ActionItemPostProcessing {
+    static func sanitize(
+        _ items: [GeneratedActionItem],
+        maxItems: Int,
+        minCharacters: Int
+    ) -> [ActionItem] {
         var seen = Set<String>()
         var out: [ActionItem] = []
         for item in items {
             let task = stripBulletPrefix(item.task).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard task.count >= Self.minBulletCharacters else { continue }
-            let key = normalize(task)
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
+            guard task.count >= minCharacters else { continue }
             let trimmedOwner = item.owner.trimmingCharacters(in: .whitespacesAndNewlines)
             let owner: String? = trimmedOwner.isEmpty ? nil : trimmedOwner
+            let key = normalize("\(owner ?? "") \(task)")
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
             out.append(ActionItem(task: task, owner: owner))
+            guard out.count < maxItems else { break }
         }
         return out
     }
 
-    private func stripBulletPrefix(_ s: String) -> String {
+    static func stripBulletPrefix(_ s: String) -> String {
         var trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         while let first = trimmed.first, first == "-" || first == "*" || first == "•" {
             trimmed.removeFirst()
@@ -301,7 +340,7 @@ actor FoundationModelsSummarizer: TranscriptSummarizer {
         return trimmed
     }
 
-    private func normalize(_ s: String) -> String {
+    static func normalize(_ s: String) -> String {
         s.lowercased().unicodeScalars.filter { scalar in
             CharacterSet.alphanumerics.contains(scalar) || scalar == " "
         }.map(String.init).joined()

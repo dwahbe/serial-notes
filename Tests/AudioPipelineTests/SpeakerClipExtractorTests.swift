@@ -159,6 +159,17 @@ struct SpeakerClipExtractorTests {
         #expect(SpeakerClipExtractor.segmentsCovering(segments, timestamps: []).isEmpty)
     }
 
+    @Test("Only surviving system entries authorize an offline speaker clip")
+    func survivingSystemEntriesExcludeMicAndFilteredEchoes() {
+        let entries = [
+            TranscriptEntry(source: .mic, speaker: "Person 1", text: "local bleed", timestamp: 3),
+            TranscriptEntry(source: .system, speaker: "Person 2", text: "remote", timestamp: 8),
+        ]
+        #expect(SpeakerClipExtractor.survivingSystemEntries(for: "Person 1", in: entries).isEmpty)
+        let remote = SpeakerClipExtractor.survivingSystemEntries(for: "Person 2", in: entries)
+        #expect(remote.map(\.timestamp) == [8])
+    }
+
     // MARK: - transcriptContainsSpeaker
 
     @Test("Detects a speaker header but not action-item owners")

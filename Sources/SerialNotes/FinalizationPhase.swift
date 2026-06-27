@@ -10,6 +10,8 @@ enum FinalizationPhase: Sendable {
     case finishingTranscript
     /// High-accuracy second ASR pass over the saved WAVs — usually the longest stage.
     case improvingTranscript
+    /// Offline re-diarization + speaker-identity matching over the saved system audio.
+    case identifyingSpeakers
     /// Foundation Models summary + action items.
     case summarizing
     /// Speaker clip extraction, audio cleanup, diagnostics.
@@ -19,6 +21,7 @@ enum FinalizationPhase: Sendable {
         switch self {
         case .finishingTranscript: "Finalizing transcript…"
         case .improvingTranscript: "Improving accuracy…"
+        case .identifyingSpeakers: "Identifying speakers…"
         case .summarizing: "Writing summary…"
         case .wrappingUp: "Wrapping up…"
         }
@@ -28,6 +31,7 @@ enum FinalizationPhase: Sendable {
         switch self {
         case .finishingTranscript: 0.1
         case .improvingTranscript: 0.35
+        case .identifyingSpeakers: 0.55
         case .summarizing: 0.7
         case .wrappingUp: 0.9
         }

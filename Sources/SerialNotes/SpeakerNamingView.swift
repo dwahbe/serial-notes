@@ -148,13 +148,29 @@ private struct SpeakerNamingRow: View {
     private var clipURL: URL { session.clipURL(for: speaker) }
     private var isPlaying: Bool { player.isPlaying(clipURL) }
 
+    /// The offline pass's mid-confidence guess for a `.suggested` speaker, if any.
+    private var suggestion: String? {
+        speaker.state == .suggested ? speaker.suggestedName : nil
+    }
+
+    /// "Accept" when the pre-filled suggestion is unchanged (one tap), else "Save".
+    private var saveButtonTitle: String {
+        if let suggestion, nameDraft.trimmingCharacters(in: .whitespaces) == suggestion { return "Accept" }
+        return "Save"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 playButton
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(speaker.label)
                         .font(.headline)
+                    if let suggestion {
+                        Label("Looks like \(suggestion)", systemImage: "sparkles")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                    }
                     if !speaker.sampleText.isEmpty {
                         Text("“\(speaker.sampleText)”")
                             .font(.callout)
@@ -173,7 +189,7 @@ private struct SpeakerNamingRow: View {
                     .onSubmit(save)
                 Button("Skip", action: skip)
                     .buttonStyle(.bordered)
-                Button("Save", action: save)
+                Button(saveButtonTitle, action: save)
                     .buttonStyle(.borderedProminent)
                     .disabled(nameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -186,6 +202,11 @@ private struct SpeakerNamingRow: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onAppear {
+            // Pre-fill the field with the offline pass's suggestion so a correct guess is
+            // one tap ("Accept"); the user can still edit the field to correct it.
+            if let suggestion, nameDraft.isEmpty { nameDraft = suggestion }
+        }
     }
 
     private var playButton: some View {

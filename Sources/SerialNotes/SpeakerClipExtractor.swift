@@ -9,7 +9,9 @@ import Foundation
 /// area (see `SpeakerClipExtractor.pendingDirectory`) so this can live in the user's
 /// storage folder without violating the "only transcript.md is kept" promise.
 struct SpeakerSidecar: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    /// v2 adds the `.suggested` state + `DetectedSpeaker.suggestedName` for the offline
+    /// identity pass. Older v1 sidecars decode fine — the new field is optional.
+    static let currentVersion = 2
 
     var version: Int
     var sessionStartedAt: Date
@@ -18,6 +20,9 @@ struct SpeakerSidecar: Codable, Equatable, Sendable {
 
 enum SpeakerState: String, Codable, Sendable {
     case pending
+    /// The offline identity pass found a likely (mid-confidence) match the user can
+    /// accept with one tap, or correct.
+    case suggested
     case named
     case skipped
 }
@@ -42,6 +47,9 @@ struct DetectedSpeaker: Codable, Equatable, Sendable, Identifiable {
     var state: SpeakerState
     /// Set once the user names this speaker.
     var resolvedName: String?
+    /// A mid-confidence name the offline identity pass proposes (state `.suggested`),
+    /// acceptable with one tap. Nil for pending / named / skipped.
+    var suggestedName: String?
 
     var id: Int { speakerIndex }
 }
@@ -305,18 +313,17 @@ enum SpeakerClipExtractor {
     /// region so a quote in the body that literally says the label is left intact.
     /// Idempotent: a no-op once `oldLabel` no longer appears.
     static func relabelSpeaker(in transcript: String, from oldLabel: String, to newName: String) -> String {
-        let oldPrefix = "**\(oldLabel)** ("
-        let newPrefix = "**\(newName)** ("
         let lines = transcript.components(separatedBy: "\n")
         var reachedBody = false
         let rewritten = lines.map { line -> String in
             // A genuine speaker-entry header marks the start of the transcript body; once
             // we're in the body we only ever swap headers, never spoken prose.
-            if TranscriptFormatter.parseEntryHeader(line)?.label != nil {
+            if let header = TranscriptFormatter.parseEntryHeader(line) {
                 reachedBody = true
-                guard TranscriptFormatter.parseEntryHeader(line)?.label == oldLabel,
-                      line.hasPrefix(oldPrefix) else { return line }
-                return newPrefix + line.dropFirst(oldPrefix.count)
+                guard header.label == oldLabel else { return line }
+                return TranscriptFormatter.replacingEntryHeaderLabel(
+                    in: line, from: oldLabel, to: newName
+                ) ?? line
             }
             // Header + Summary + Action-items region: replace whole-word label references
             // (covers both summary bullets and bold `**Person N**` action-item owners).
@@ -368,5 +375,15 @@ enum SpeakerClipExtractor {
         return segments.filter { segment in
             timestamps.contains { $0 >= segment.start - tolerance && $0 <= segment.end + tolerance }
         }
+    }
+
+    /// Final system-channel entries for one re-attributed speaker. Keeping this
+    /// source-aware prevents a matching mic label—or an echo the final filter removed
+    /// altogether—from authorizing an offline enrollment clip.
+    static func survivingSystemEntries(
+        for label: String,
+        in entries: [TranscriptEntry]
+    ) -> [TranscriptEntry] {
+        entries.filter { $0.source == .system && $0.speaker == label }
     }
 }

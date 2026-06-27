@@ -18,8 +18,11 @@ struct MeetingSession: Identifiable {
     /// Pending speakers whose clip still exists — what the naming UI offers.
     var nameableSpeakers: [DetectedSpeaker] { sidecar.speakers.filter { nameableIndices.contains($0.speakerIndex) } }
     var namedSpeakers: [DetectedSpeaker] { sidecar.speakers.filter { $0.state == .named } }
-    /// Speakers still marked pending in the sidecar, regardless of clip availability.
-    var pendingSpeakers: [DetectedSpeaker] { sidecar.speakers.filter { $0.state == .pending } }
+    /// Speakers still awaiting a user decision, regardless of clip availability.
+    /// A suggested speaker is equally actionable: the UI can accept or correct it.
+    var pendingSpeakers: [DetectedSpeaker] {
+        sidecar.speakers.filter { $0.state == .pending || $0.state == .suggested }
+    }
     /// What the list/badge shows — only speakers that can actually be named.
     var pendingCount: Int { nameableSpeakers.count }
 
@@ -113,9 +116,10 @@ final class MeetingSessionsStore {
         let nameable = Set(
             sidecar.speakers
                 .filter { speaker in
-                    speaker.state == .pending && FileManager.default.fileExists(
-                        atPath: SpeakerClipExtractor.clipURL(sessionFolder: folder, clipFile: speaker.clipFile).path
-                    )
+                    (speaker.state == .pending || speaker.state == .suggested)
+                        && FileManager.default.fileExists(
+                            atPath: SpeakerClipExtractor.clipURL(sessionFolder: folder, clipFile: speaker.clipFile).path
+                        )
                 }
                 .map(\.speakerIndex)
         )
@@ -148,6 +152,7 @@ final class MeetingSessionsStore {
             if let idx = sidecar.speakers.firstIndex(where: { $0.speakerIndex == speaker.speakerIndex }) {
                 sidecar.speakers[idx].state = .named
                 sidecar.speakers[idx].resolvedName = name
+                sidecar.speakers[idx].suggestedName = nil
             }
         }
         try? FileManager.default.removeItem(at: clipURL)
@@ -159,6 +164,7 @@ final class MeetingSessionsStore {
         let updated = try updateSidecar(in: session.directory) { sidecar in
             if let idx = sidecar.speakers.firstIndex(where: { $0.speakerIndex == speaker.speakerIndex }) {
                 sidecar.speakers[idx].state = .skipped
+                sidecar.speakers[idx].suggestedName = nil
             }
         }
         try? FileManager.default.removeItem(at: session.clipURL(for: speaker))
@@ -172,8 +178,10 @@ final class MeetingSessionsStore {
     func dismiss(_ session: MeetingSession) {
         do {
             _ = try updateSidecar(in: session.directory) { sidecar in
-                for idx in sidecar.speakers.indices where sidecar.speakers[idx].state == .pending {
+                for idx in sidecar.speakers.indices
+                where sidecar.speakers[idx].state == .pending || sidecar.speakers[idx].state == .suggested {
                     sidecar.speakers[idx].state = .skipped
+                    sidecar.speakers[idx].suggestedName = nil
                 }
             }
             SpeakerClipExtractor.reapPendingClips(forSessionFolder: session.directory.lastPathComponent)
@@ -229,7 +237,7 @@ final class MeetingSessionsStore {
     /// Reap the pending-clip directory once no speakers remain pending. Takes the
     /// just-written sidecar so it doesn't re-read it from disk.
     private func reapClipsIfResolved(_ directory: URL, sidecar: SpeakerSidecar) {
-        if !sidecar.speakers.contains(where: { $0.state == .pending }) {
+        if !sidecar.speakers.contains(where: { $0.state == .pending || $0.state == .suggested }) {
             SpeakerClipExtractor.reapPendingClips(forSessionFolder: directory.lastPathComponent)
         }
     }

@@ -6,6 +6,15 @@
     <description>Most recent updates to Serial Notes.</description>
     <language>en</language>
     <item>
+      <title>Version 0.2.0</title>
+      <link>https://github.com/dwahbe/serial-notes/releases/tag/v0.2.0</link>
+      <sparkle:version>129</sparkle:version>
+      <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <pubDate>Thu, 02 Jul 2026 16:45:17 -0000</pubDate>
+      <enclosure url="https://github.com/dwahbe/serial-notes/releases/download/v0.2.0/SerialNotes.dmg" sparkle:edSignature="ZVCDlx8p1etmqmIh++oOBZDhbVtEZj2GKDaWYZ9gmhFz+I0LtzDdkRlJJLTHMLkp+b+lJxhf0j/pDyF1h6QZCw==" length="4131844" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 0.1.8</title>
       <link>https://github.com/dwahbe/serial-notes/releases/tag/v0.1.8</link>
       <sparkle:version>127</sparkle:version>

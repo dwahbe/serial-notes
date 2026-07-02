@@ -398,6 +398,7 @@ private struct GeneralSettingsTab: View {
     @Environment(StorageSettings.self) private var storageSettings
     @Environment(SummarySettings.self) private var summarySettings
     @Environment(MeetingSettings.self) private var meetingSettings
+    @Environment(ManualNotesSettings.self) private var manualNotesSettings
     @Environment(ExportSettings.self) private var exportSettings
     @Environment(UpdaterController.self) private var updater
     @Environment(RecordingState.self) private var recordingState
@@ -433,6 +434,7 @@ private struct GeneralSettingsTab: View {
         @Bindable var summary = summarySettings
         @Bindable var storage = storageSettings
         @Bindable var meeting = meetingSettings
+        @Bindable var manualNotes = manualNotesSettings
         @Bindable var export = exportSettings
 
         Form {
@@ -476,6 +478,16 @@ private struct GeneralSettingsTab: View {
                 }
             }
             .disabled(!foundationModelsAvailable)
+
+            Section {
+                Toggle("Open notepad when recording starts", isOn: $manualNotes.openNotepadWhenRecordingStarts)
+            } header: {
+                Text("Notepad")
+            } footer: {
+                Text("Notepad contents are saved locally during recording and added to transcript.md before summary and action items. They don't affect generated summaries.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Section {
                 Toggle("Send to Apple Notes", isOn: $export.sendToAppleNotes)

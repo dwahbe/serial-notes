@@ -55,10 +55,14 @@ struct SpeakerRelabelTests {
         #expect(once == twice)
     }
 
-    @Test("Relabels summary prose and action-item owners above the first entry")
-    func relabelsSummaryAndActionItems() {
+    @Test("Relabels notes, summary prose, and action-item owners above the first entry")
+    func relabelsTopSections() {
         let transcript = """
         # Meeting — 2026-06-05 at 6:26 PM
+
+        ## Notes
+
+        Person 2 owns the launch follow-up.
 
         ## Summary
 
@@ -71,8 +75,9 @@ struct SpeakerRelabelTests {
         **Person 2** (00:00:05): I'll send it.
         """
         let out = SpeakerClipExtractor.relabelSpeaker(in: transcript, from: "Person 2", to: "Dana")
-        // Header, summary bullet, and bold action-item owner all carry the new name.
+        // Header, notes, summary bullet, and bold action-item owner all carry the new name.
         #expect(out.contains("**Dana** (00:00:05): I'll send it."))
+        #expect(out.contains("Dana owns the launch follow-up."))
         #expect(out.contains("- [ ] **Dana** — send the report"))
         #expect(out.contains("- Dana raised the budget question."))
         #expect(!out.contains("Person 2"))
@@ -124,6 +129,34 @@ struct SpeakerRelabelTests {
         let transcript = "**Person 2** (100:00:05): Marathon meeting."
         let out = SpeakerClipExtractor.relabelSpeaker(in: transcript, from: "Person 2", to: "Fin")
         #expect(out == "**Fin** (100:00:05): Marathon meeting.")
+    }
+
+    @Test("Pasted entry-shaped quote in notes doesn't end the relabel region")
+    func pastedQuoteInNotesKeepsRelabelRegion() {
+        let transcript = """
+        # Meeting — 2026-07-02
+
+        ## Notes
+
+        **Person 2** (00:00:05): pasted quote from another meeting
+
+        \(TranscriptFormatter.manualNotesEndMarker)
+
+        ## Summary
+
+        - Person 2 raised the budget question.
+
+        **Person 2** (00:01:00): Real entry.
+        **Person 1** (00:02:00): I think Person 2 should lead this.
+        """
+        let out = SpeakerClipExtractor.relabelSpeaker(in: transcript, from: "Person 2", to: "Alex")
+        // The pasted quote is notes prose: whole-word relabel, no region flip…
+        #expect(out.contains("**Alex** (00:00:05): pasted quote from another meeting"))
+        // …so the summary below the notes still relabels…
+        #expect(out.contains("- Alex raised the budget question."))
+        // …real headers still swap, and body quotes stay untouched.
+        #expect(out.contains("**Alex** (00:01:00): Real entry."))
+        #expect(out.contains("I think Person 2 should lead this."))
     }
 
     // MARK: - sanitizedName

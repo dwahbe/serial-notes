@@ -8,6 +8,7 @@ struct MenuBarView: View {
     @Environment(ModelDownloadState.self) private var modelDownloadState
     @Environment(MeetingDetectionService.self) private var meetingDetectionService
     @Environment(SettingsNavigation.self) private var navigation
+    @Environment(ManualNotesWindowController.self) private var manualNotesWindow
     @Environment(\.openSettings) private var openSettings
 
     private var foundationModelsAvailable: Bool {
@@ -274,6 +275,13 @@ struct MenuBarView: View {
         // this small subtree on each 1Hz tick — the rest of `recordingContent`
         // (and the parent `body`) stays stable.
         ElapsedTimeText(recordingState: recordingState)
+
+        Button(action: { manualNotesWindow.present() }) {
+            Label("Open Notes", systemImage: "note.text")
+                .frame(maxWidth: .infinity)
+        }
+        .controlSize(.large)
+        .buttonStyle(.glass)
 
         Button(action: { recordingState.stop() }) {
             Label("Stop Recording", systemImage: "stop.circle")

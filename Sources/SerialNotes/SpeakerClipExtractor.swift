@@ -274,9 +274,13 @@ enum SpeakerClipExtractor {
     /// their text. Non-header lines (summary, action items, headings) are ignored.
     static func parseEntries(_ transcript: String) -> [ParsedEntry] {
         let lines = transcript.components(separatedBy: "\n")
+        // Lines inside the sentinel-delimited `## Notes` section are user prose —
+        // a pasted transcript quote there must not become a phantom entry.
+        let notesRange = TranscriptFormatter.manualNotesLineRange(in: lines)
         var entries: [ParsedEntry] = []
         var i = 0
         while i < lines.count {
+            if let notesRange, notesRange.contains(i) { i += 1; continue }
             guard let header = TranscriptFormatter.parseEntryHeader(lines[i]) else { i += 1; continue }
             var text = header.inlineBody
             if text.isEmpty {
@@ -306,27 +310,32 @@ enum SpeakerClipExtractor {
 
     /// Relabel a named speaker everywhere it appears in a finalized transcript:
     /// the `**<oldLabel>** (ts):` speaker-entry headers (exact, leading-token swap) **and**
-    /// the Summary / Action-items region above the first speaker entry, where the label
-    /// shows up as plain prose ("Person 1 raised the budget question") or a bold
-    /// action-item owner (`- [ ] **Person 1** — …`). The prose pass is whole-word so
+    /// the top Notes / Summary / Action-items region above the first speaker entry,
+    /// where the label shows up as plain prose ("Person 1 raised the budget question")
+    /// or a bold action-item owner (`- [ ] **Person 1** — …`). The prose pass is whole-word so
     /// "Person 1" never clobbers "Person 10"/"Person 12", and is scoped to the pre-entry
     /// region so a quote in the body that literally says the label is left intact.
     /// Idempotent: a no-op once `oldLabel` no longer appears.
     static func relabelSpeaker(in transcript: String, from oldLabel: String, to newName: String) -> String {
         let lines = transcript.components(separatedBy: "\n")
+        // The sentinel-delimited `## Notes` section is user prose no matter its
+        // shape: a pasted transcript quote there must not flip the region to body
+        // mode, or the real Summary/Action items below it would never relabel.
+        let notesRange = TranscriptFormatter.manualNotesLineRange(in: lines)
         var reachedBody = false
-        let rewritten = lines.map { line -> String in
+        let rewritten = lines.enumerated().map { index, line -> String in
             // A genuine speaker-entry header marks the start of the transcript body; once
             // we're in the body we only ever swap headers, never spoken prose.
-            if let header = TranscriptFormatter.parseEntryHeader(line) {
+            if notesRange?.contains(index) != true,
+               let header = TranscriptFormatter.parseEntryHeader(line) {
                 reachedBody = true
                 guard header.label == oldLabel else { return line }
                 return TranscriptFormatter.replacingEntryHeaderLabel(
                     in: line, from: oldLabel, to: newName
                 ) ?? line
             }
-            // Header + Summary + Action-items region: replace whole-word label references
-            // (covers both summary bullets and bold `**Person N**` action-item owners).
+            // Header + top Notes / Summary / Action-items region: replace whole-word label
+            // references (covers notes, summary bullets, and bold action-item owners).
             guard !reachedBody else { return line }
             return replacingWholeWord(oldLabel, with: newName, in: line)
         }

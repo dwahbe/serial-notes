@@ -144,7 +144,7 @@ final class MeetingSessionsStore {
         // 1. Reusable profile for future recognition (copies the clip into the voices dir).
         try voiceStore.upsertOther(name: name, clipURL: clipURL)
 
-        // 2. Relabel this transcript — headers + the summary / action-items region (idempotent).
+        // 2. Relabel this transcript — headers + the top notes/summary/action-items region (idempotent).
         relabelTranscript(in: session.directory, from: speaker.label, to: name)
 
         // 3. Persist state + reap the now-consumed clip.

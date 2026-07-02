@@ -35,8 +35,10 @@ enum MeetingExporter {
         }
         // Drop the YAML front-matter — both apps would render `---` as a rule and the
         // `date:`/`duration:` lines as stray text. The `# Meeting — …` H1 stays and
-        // becomes the note title in both Notes and Bear.
-        let body = strippingFrontMatter(raw)
+        // becomes the note title in both Notes and Bear. The notes sentinel is
+        // parsing plumbing, not content: Apple Notes would show it as literal text
+        // (inlineHTML escapes angle brackets) and Bear shows raw comments.
+        let body = strippingManualNotesMarker(strippingFrontMatter(raw))
 
         if targets.contains(.appleNotes) {
             await exportToAppleNotes(markdownBody: body)
@@ -212,57 +214,94 @@ enum MeetingExporter {
         return lines[start...].joined(separator: "\n")
     }
 
+    /// Drop the invisible `## Notes` closing sentinel lines from an export body.
+    static func strippingManualNotesMarker(_ markdown: String) -> String {
+        markdown
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces) != TranscriptFormatter.manualNotesEndMarker }
+            .joined(separator: "\n")
+    }
+
     /// Render the transcript body Markdown (front-matter already stripped) to a
     /// single line of HTML for Apple Notes. Handles the exact grammar Serial Notes
-    /// emits: `#`/`##` headings, `-`/`*` bullets, `- [ ]`/`- [x]` task items, and
-    /// `**bold**`/`*italic*` inline — including both inline and block-form speaker
+    /// emits: `#`/`##` headings, `-`/`*` bullets, `1.` ordered items, `- [ ]`/
+    /// `- [x]` task items — all nestable by indentation — and `***bold-italic***`/
+    /// `**bold**`/`*italic*` inline, including both inline and block-form speaker
     /// entries (each non-empty line becomes its own paragraph).
     static func htmlBody(fromMarkdown markdown: String) -> String {
         var html = ""
-        var inList = false
-        // Split on every newline variant (CR, CRLF, U+2028/2029, NEL) — transcript.md
-        // is the user's editing surface, so it may arrive with non-LF separators; the
-        // single-line invariant the AppleScript literal relies on must hold for all.
-        func closeList() {
-            if inList {
-                html += "</ul>"
-                inList = false
+        // Open lists as (tag, indent level), innermost last. An `<li>` stays open
+        // until its sibling arrives or its list closes, so a deeper item nests
+        // INSIDE its parent (`<li>parent<ul>…</ul></li>`) — the shape Notes needs
+        // to show real nesting. Levels come from `TranscriptFormatter
+        // .listIndentLevel`, the same rule the notepad editor renders from.
+        var openLists: [(tag: String, level: Int)] = []
+
+        func closeInnermostList() {
+            if let list = openLists.popLast() {
+                html += "</li></\(list.tag)>"
             }
         }
-        func openList() {
-            if !inList {
-                html += "<ul>"
-                inList = true
+        func closeAllLists() {
+            while !openLists.isEmpty { closeInnermostList() }
+        }
+        func appendListItem(_ tag: String, level: Int, content: String) {
+            while let top = openLists.last,
+                  top.level > level || (top.level == level && top.tag != tag)
+            {
+                closeInnermostList()
+            }
+            if openLists.last?.level == level {
+                html += "</li><li>\(content)"
+            } else {
+                // Deeper than (or first after) the current list — open a new one
+                // inside the still-open parent item. A multi-level jump opens a
+                // single list at the target level rather than synthesizing
+                // intermediates.
+                html += "<\(tag)><li>\(content)"
+                openLists.append((tag, level))
             }
         }
 
+        // Split on every newline variant (CR, CRLF, U+2028/2029, NEL) — transcript.md
+        // is the user's editing surface, so it may arrive with non-LF separators; the
+        // single-line invariant the AppleScript literal relies on must hold for all.
         for rawLine in markdown.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty {
-                closeList()
+                closeAllLists()
                 continue
             }
+            let level = TranscriptFormatter.listIndentLevel(
+                of: rawLine.prefix(while: { $0 == " " || $0 == "\t" })
+            )
             if line.hasPrefix("## ") {
-                closeList()
+                closeAllLists()
                 html += "<h2>\(inlineHTML(String(line.dropFirst(3))))</h2>"
             } else if line.hasPrefix("# ") {
-                closeList()
+                closeAllLists()
                 html += "<h1>\(inlineHTML(String(line.dropFirst(2))))</h1>"
             } else if line.hasPrefix("- [ ] ") {
-                openList()
-                html += "<li>\u{2610} \(inlineHTML(String(line.dropFirst(6))))</li>"
+                appendListItem("ul", level: level, content: "\u{2610} \(inlineHTML(String(line.dropFirst(6))))")
             } else if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-                openList()
-                html += "<li>\u{2611}\u{FE0E} \(inlineHTML(String(line.dropFirst(6))))</li>"
+                appendListItem("ul", level: level, content: "\u{2611}\u{FE0E} \(inlineHTML(String(line.dropFirst(6))))")
             } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                openList()
-                html += "<li>\(inlineHTML(String(line.dropFirst(2))))</li>"
+                appendListItem("ul", level: level, content: inlineHTML(String(line.dropFirst(2))))
+            } else if let marker = orderedItemRegex.firstMatch(
+                in: line,
+                range: NSRange(location: 0, length: (line as NSString).length)
+            ) {
+                appendListItem(
+                    "ol",
+                    level: level,
+                    content: inlineHTML((line as NSString).substring(from: marker.range.length))
+                )
             } else {
-                closeList()
+                closeAllLists()
                 html += "<p>\(inlineHTML(line))</p>"
             }
         }
-        closeList()
+        closeAllLists()
         return html
     }
 
@@ -275,6 +314,9 @@ enum MeetingExporter {
         return convertEmphasis(escaped)
     }
 
+    // Flank rules mirror ManualNotesMarkdownEditor's bold/italic grammar — keep
+    // them in lockstep so what styles in the notepad exports the same way.
+    //
     // An emphasis span must be balanced and flank non-whitespace (CommonMark-style),
     // and `**` is matched before `*`. This is what keeps a stray `**` in transcript
     // text (e.g. "C++ uses ** for pointers", Python "**kwargs") from shredding the
@@ -283,24 +325,31 @@ enum MeetingExporter {
     // marker that isn't part of a balanced, tight span is left as literal text.
     //
     // The italic span excludes `<`/`>` so it can't reach across a `<b>`/`</b>` tag
-    // the bold pass already emitted (which would cross tags on `***x***` or a single
-    // `*` straddling a `**` boundary). User content can't contain a literal `<`/`>`
+    // the bold pass already emitted (which would cross tags on a single `*`
+    // straddling a `**` boundary). User content can't contain a literal `<`/`>`
     // here — inlineHTML escapes those to `&lt;`/`&gt;` first — so only our own tags
     // carry real angle brackets, and a pathological run degrades to literal `*`
     // rather than malformed HTML.
+    //
+    // `***bold-italic***` runs first (tight span, mirroring the editor's
+    // `boldItalicRegex`) so the bold pass can't eat the inside of a `***` fence
+    // and strand literal asterisks.
+    private static let boldItalicRegex = try! NSRegularExpression(pattern: #"\*\*\*(?=\S)([^*<>]+?)(?<=\S)\*\*\*"#)
     private static let boldRegex = try! NSRegularExpression(pattern: #"\*\*(?=\S)(.+?)(?<=\S)\*\*"#)
     private static let italicRegex = try! NSRegularExpression(pattern: #"(?<!\*)\*(?!\*)(?=\S)([^*<>]+?)(?<=\S)\*(?!\*)"#)
+    private static let orderedItemRegex = try! NSRegularExpression(pattern: #"^\d+\.\s+"#)
 
     private static func convertEmphasis(_ text: String) -> String {
-        let bolded = replaceMatches(boldRegex, in: text, tag: "b")
-        return replaceMatches(italicRegex, in: bolded, tag: "i")
+        let boldItalicized = regexReplace(boldItalicRegex, in: text, template: "<b><i>$1</i></b>")
+        let bolded = regexReplace(boldRegex, in: boldItalicized, template: "<b>$1</b>")
+        return regexReplace(italicRegex, in: bolded, template: "<i>$1</i>")
     }
 
-    private static func replaceMatches(_ regex: NSRegularExpression, in text: String, tag: String) -> String {
+    private static func regexReplace(_ regex: NSRegularExpression, in text: String, template: String) -> String {
         regex.stringByReplacingMatches(
             in: text,
             range: NSRange(text.startIndex..., in: text),
-            withTemplate: "<\(tag)>$1</\(tag)>"
+            withTemplate: template
         )
     }
 }

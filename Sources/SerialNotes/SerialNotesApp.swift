@@ -4,6 +4,8 @@ import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     weak var recordingState: RecordingState?
     weak var meetingDetectionService: MeetingDetectionService?
+    weak var manualNotesStore: ManualNotesStore?
+    weak var manualNotesWindowController: ManualNotesWindowController?
     /// Set when `SerialNotesApp.init` held back the launch-time model download
     /// because another instance was still running; invoked once this launch has
     /// survived the single-instance guard.
@@ -44,6 +46,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // model download init held back while another instance was running.
         deferredModelDownload?()
         deferredModelDownload = nil
+
+        // A splice failure during a previous quit left notes only in a hidden
+        // sidecar — restore them into the notepad so the failure isn't silent.
+        if manualNotesStore?.restoreQuitRecoveryDraft() == true {
+            manualNotesWindowController?.present()
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -68,6 +76,9 @@ struct SerialNotesApp: App {
     @State private var meetingSettings: MeetingSettings
     @State private var identitySettings: IdentitySettings
     @State private var exportSettings: ExportSettings
+    @State private var manualNotesSettings: ManualNotesSettings
+    @State private var manualNotesStore: ManualNotesStore
+    @State private var manualNotesWindowController: ManualNotesWindowController
     @State private var modelDownloadState: ModelDownloadState
     @State private var meetingDetectionService: MeetingDetectionService
     @State private var voiceProfileStore: VoiceProfileStore
@@ -83,6 +94,9 @@ struct SerialNotesApp: App {
         let meeting = MeetingSettings()
         let identity = IdentitySettings()
         let export = ExportSettings()
+        let manualNotes = ManualNotesSettings()
+        let manualNotesStore = ManualNotesStore()
+        let manualNotesWindow = ManualNotesWindowController()
         let voices = VoiceProfileStore()
         let sessionsStore = MeetingSessionsStore(storageSettings: storage, voiceStore: voices)
         let navigation = SettingsNavigation()
@@ -94,6 +108,10 @@ struct SerialNotesApp: App {
         recording.storageSettings = storage
         recording.identitySettings = identity
         recording.exportSettings = export
+        recording.manualNotesSettings = manualNotes
+        recording.manualNotesStore = manualNotesStore
+        recording.manualNotesWindowController = manualNotesWindow
+        manualNotesWindow.notesStore = manualNotesStore
         recording.onRecordingChange = { [weak detector] in detector?.recordingStateChanged() }
         // After a recording finalizes with unrecognized speakers, offer to name them.
         recording.onUnnamedSpeakers = { [weak detector, weak navigation, weak sessionsStore] dir, count in
@@ -122,6 +140,9 @@ struct SerialNotesApp: App {
         _meetingSettings = State(initialValue: meeting)
         _identitySettings = State(initialValue: identity)
         _exportSettings = State(initialValue: export)
+        _manualNotesSettings = State(initialValue: manualNotes)
+        _manualNotesStore = State(initialValue: manualNotesStore)
+        _manualNotesWindowController = State(initialValue: manualNotesWindow)
         _modelDownloadState = State(initialValue: modelState)
         _meetingDetectionService = State(initialValue: detector)
         _voiceProfileStore = State(initialValue: voices)
@@ -132,6 +153,8 @@ struct SerialNotesApp: App {
 
         appDelegate.recordingState = recording
         appDelegate.meetingDetectionService = detector
+        appDelegate.manualNotesStore = manualNotesStore
+        appDelegate.manualNotesWindowController = manualNotesWindow
 
         // Kick model download off at app launch, not when the popover first
         // opens — the banner lets users start recording without ever opening
@@ -164,6 +187,8 @@ struct SerialNotesApp: App {
                 .environment(storageSettings)
                 .environment(summarySettings)
                 .environment(meetingSettings)
+                .environment(manualNotesStore)
+                .environment(manualNotesWindowController)
                 .environment(modelDownloadState)
                 .environment(meetingDetectionService)
                 .environment(voiceProfileStore)
@@ -192,12 +217,16 @@ struct SerialNotesApp: App {
                 .environment(meetingSettings)
                 .environment(identitySettings)
                 .environment(exportSettings)
+                .environment(manualNotesSettings)
                 .environment(meetingDetectionService)
                 .environment(meetingSessionsStore)
                 .environment(settingsNavigation)
                 .environment(updaterController)
                 .environment(recordingState)
         }
+
+        // The notepad is a floating NSPanel owned by ManualNotesWindowController
+        // (not a Window scene) so it can overlay full-screen meeting apps.
 
         Window("Welcome to Serial Notes", id: onboardingWindowID) {
             OnboardingFlowView(

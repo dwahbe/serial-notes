@@ -350,6 +350,12 @@ enum ActionItemPostProcessing {
 // MARK: - Shared text processing
 
 enum SummarizerTextProcessing {
+    /// Below this many words (headers included) the transcript is background
+    /// noise or a stray recording, not a meeting — the model fabricates a
+    /// generic one rather than summarizing. Callers skip the summary pass
+    /// entirely: a fabricated summary is worse than none.
+    static let minSummaryInputWords = 50
+
     static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }

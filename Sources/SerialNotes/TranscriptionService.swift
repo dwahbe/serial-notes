@@ -2,6 +2,11 @@
 import FluidAudio
 import Foundation
 
+struct FinalizedSessionResult: Sendable {
+    let pendingSpeakerCount: Int
+    let manualNotesCommitted: Bool
+}
+
 actor TranscriptionService {
     // MARK: - Callbacks (set by RecordingState)
 
@@ -29,7 +34,7 @@ actor TranscriptionService {
     /// Constructed at session start when the user has summary or action items
     /// enabled, so the underlying LanguageModelSessions can prewarm during the
     /// recording instead of paying ~200–500ms cold-start each at session end.
-    /// Falls through to lazy construction in `spliceSummarySections` if the
+    /// Falls through to lazy construction in `spliceTopSections` if the
     /// user toggled summary on after recording started.
     private var summarizer: (any TranscriptSummarizer)?
     private var activeSessionID: UUID?
@@ -214,6 +219,7 @@ actor TranscriptionService {
         summarySettings: SummarySettings.Snapshot = .disabled,
         keepAudioFiles: Bool = true,
         summaryCutoff: TimeInterval? = nil,
+        manualNotesMarkdown: String? = nil,
         extractSpeakers: Bool = true,
         performOfflineIdentity: Bool = true,
         speakerCandidates: [SpeakerIdentityMatcher.Candidate] = [],
@@ -221,7 +227,7 @@ actor TranscriptionService {
         offlineIdentityTimeout: Duration? = nil,
         requirePreparedOfflineModels: Bool = false,
         onPhase: (@Sendable (FinalizationPhase) -> Void)? = nil
-    ) async -> Int {
+    ) async -> FinalizedSessionResult {
         onPhase?(.finishingTranscript)
         for side in AudioSide.allCases {
             do {
@@ -260,9 +266,11 @@ actor TranscriptionService {
         }
         transcriptHandle = nil
 
-        // Both paths leave a finalized transcript on disk — splice summary +
-        // action items between the header and the first entry when requested.
+        // Both paths leave a finalized transcript on disk — splice manual notes,
+        // summary, and action items between the header and the first entry when
+        // requested.
         var pendingSpeakerCount = 0
+        var manualNotesCommitted = false
         if let directory = sessionDirectory {
             // Offline identity pass: re-diarize the system audio, re-attribute the
             // transcript's "Person N" labels to the speakers it actually finds, and
@@ -305,11 +313,12 @@ actor TranscriptionService {
             if summarySettings.generateSummary || summarySettings.generateActionItems {
                 onPhase?(.summarizing)
             }
-            await spliceSummarySections(
+            manualNotesCommitted = await spliceTopSections(
                 sessionDirectory: directory,
                 header: finalHeader,
                 settings: summarySettings,
-                summaryCutoff: summaryCutoff
+                summaryCutoff: summaryCutoff,
+                manualNotesMarkdown: manualNotesMarkdown
             )
             onPhase?(.wrappingUp)
             // Streaming-diarizer fallback — only for normal stops when the offline
@@ -337,7 +346,10 @@ actor TranscriptionService {
         enrolledMicNames = []
         micPrimaryName = "You"
         finalTranscriptEntries = []
-        return pendingSpeakerCount
+        return FinalizedSessionResult(
+            pendingSpeakerCount: pendingSpeakerCount,
+            manualNotesCommitted: manualNotesCommitted
+        )
     }
 
     // MARK: - Offline identity pass
@@ -727,47 +739,66 @@ actor TranscriptionService {
         }
     }
 
-    private func spliceSummarySections(
+    /// Splices manual notes + summary + action items between the header and the
+    /// first entry. Returns whether non-empty manual notes ended up in
+    /// transcript.md (freshly spliced or already present) — false when the notes
+    /// were empty, the transcript was unreadable, or the write failed.
+    private func spliceTopSections(
         sessionDirectory: URL,
         header: String,
         settings: SummarySettings.Snapshot,
-        summaryCutoff: TimeInterval?
-    ) async {
-        guard settings.generateSummary || settings.generateActionItems else { return }
-        // Prefer the prewarmed summarizer from startSession; fall back to a
-        // fresh one if the user enabled summary after recording started.
-        guard let summarizer = summarizer ?? TranscriptSummarizerFactory.make() else { return }
+        summaryCutoff: TimeInterval?,
+        manualNotesMarkdown: String?
+    ) async -> Bool {
+        let manualSection = TranscriptFormatter.manualNotesSection(manualNotesMarkdown)
+        let hasNotes = !manualSection.isEmpty
+        let shouldGenerateSummary = settings.generateSummary || settings.generateActionItems
+        guard hasNotes || shouldGenerateSummary else { return false }
 
         let transcriptURL = sessionDirectory.appendingPathComponent("transcript.md")
-        guard let fileText = try? String(contentsOf: transcriptURL, encoding: .utf8) else { return }
-        guard fileText.hasPrefix(header) else { return }
+        guard let fileText = try? String(contentsOf: transcriptURL, encoding: .utf8) else { return false }
+        guard fileText.hasPrefix(header) else { return false }
 
         let body = String(fileText.dropFirst(header.count))
-        let summaryBody = TranscriptFormatter.summaryInput(from: body, cutoff: summaryCutoff)
-        let trimmedSummaryBody = summaryBody.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSummaryBody.isEmpty else { return }
 
-        // Idempotency: if a previous endSession (or future regenerate-summary
-        // call) already spliced sections in, skip rather than prepending a
-        // second set and re-running FM on a transcript that already has them.
+        // Idempotency is per section: a previous endSession (or future
+        // regenerate-summary call) skips only what it already spliced, so
+        // pending notes still land above an existing generated block instead of
+        // being reported as a failure.
+        if body.contains("## Notes\n") {
+            return hasNotes
+        }
         if body.contains("## Summary\n") || body.contains("## Action items\n") {
-            return
+            guard hasNotes else { return false }
+            return write(header + manualSection + body, to: transcriptURL)
         }
 
-        let result = await summarizer.summarize(
-            transcript: trimmedSummaryBody,
-            generateSummary: settings.generateSummary,
-            generateActionItems: settings.generateActionItems
-        )
+        var result = SummaryResult.empty
+        if shouldGenerateSummary,
+           let summarizer = summarizer ?? TranscriptSummarizerFactory.make() {
+            let summaryBody = TranscriptFormatter.summaryInput(from: body, cutoff: summaryCutoff)
+            let trimmedSummaryBody = summaryBody.trimmingCharacters(in: .whitespacesAndNewlines)
+            if SummarizerTextProcessing.wordCount(trimmedSummaryBody) >= SummarizerTextProcessing.minSummaryInputWords {
+                result = await summarizer.summarize(
+                    transcript: trimmedSummaryBody,
+                    generateSummary: settings.generateSummary,
+                    generateActionItems: settings.generateActionItems
+                )
+            }
+        }
 
-        let sections = TranscriptFormatter.summarySections(result)
-        guard !sections.isEmpty else { return }
+        let sections = TranscriptFormatter.topSections(manualNotes: manualNotesMarkdown, summary: result)
+        guard !sections.isEmpty else { return false }
+        return write(header + sections + body, to: transcriptURL) && hasNotes
+    }
 
-        let newContent = header + sections + body
+    private func write(_ content: String, to transcriptURL: URL) -> Bool {
         do {
-            try newContent.write(to: transcriptURL, atomically: true, encoding: String.Encoding.utf8)
+            try content.write(to: transcriptURL, atomically: true, encoding: String.Encoding.utf8)
+            return true
         } catch {
-            NSLog("[SerialNotes/Summary] failed to write spliced transcript: \(error.localizedDescription)")
+            NSLog("[SerialNotes/Transcription] failed to write spliced transcript: \(error.localizedDescription)")
+            return false
         }
     }
 

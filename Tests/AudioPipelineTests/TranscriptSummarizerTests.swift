@@ -58,6 +58,37 @@ struct TranscriptSummarizerTests {
         }
     }
 
+    @Test("Minimum input gate: background-noise transcript falls below the threshold")
+    func minimumInputGateRejectsNoise() {
+        // Real-world fixture: a recording that caught only stray background
+        // audio. Summarizing this made the model fabricate a full meeting.
+        let noise = """
+            **Voice 2** (00:00:04): Um
+
+            **Voice 2** (00:01:17): Don're gonna let your
+
+            **Voice 2** (00:01:21): map
+
+            **Voice 2** (00:01:24): .
+            """
+        #expect(SummarizerTextProcessing.wordCount(noise) < SummarizerTextProcessing.minSummaryInputWords)
+    }
+
+    @Test("Minimum input gate: a brief real exchange clears the threshold")
+    func minimumInputGateAcceptsShortMeeting() {
+        let meeting = """
+            **You** (00:00:02): Quick sync on the launch. The build is green and \
+            the release notes are drafted, so I think we can tag tomorrow morning.
+
+            **Person 2** (00:00:14): Sounds good. I'll finish the QA pass on the \
+            installer tonight and send you the results before you tag.
+
+            **You** (00:00:25): Great, and I'll update the website download link \
+            once the release is published. Let's check in after lunch tomorrow.
+            """
+        #expect(SummarizerTextProcessing.wordCount(meeting) >= SummarizerTextProcessing.minSummaryInputWords)
+    }
+
     @Test("Chunking: short transcript stays single chunk")
     func chunkingShortTranscript() {
         let text = "**You** (00:00:01): hello there\n\n**You** (00:00:05): how are you"

@@ -12,12 +12,7 @@ enum TranscriptFormatter {
         dateFormatter.dateFormat = "yyyy-MM-dd"
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
 
-        let titleFormatter = DateFormatter()
-        titleFormatter.dateFormat = "yyyy-MM-dd 'at' h:mm a"
-        titleFormatter.locale = Locale(identifier: "en_US_POSIX")
-
         let dateString = dateFormatter.string(from: date)
-        let titleString = titleFormatter.string(from: date)
         let durationString = formatDuration(duration)
 
         return """
@@ -26,10 +21,76 @@ enum TranscriptFormatter {
         duration: \(durationString)
         ---
 
-        # Meeting — \(titleString)
+        # \(meetingTitle(date: date))
 
 
         """
+    }
+
+    static func meetingTitle(date: Date) -> String {
+        let titleFormatter = DateFormatter()
+        titleFormatter.dateFormat = "yyyy-MM-dd 'at' h:mm a"
+        titleFormatter.locale = Locale(identifier: "en_US_POSIX")
+        return "Meeting — \(titleFormatter.string(from: date))"
+    }
+
+    /// Invisible sentinel closing the `## Notes` section. Markdown renderers hide
+    /// HTML comments, but it gives every entry-grammar consumer an unambiguous
+    /// "this region is user prose" boundary — a transcript-style line pasted into
+    /// the notes must never masquerade as a real speaker entry (phantom speakers,
+    /// truncated relabel region). `MeetingExporter` strips it from exports.
+    static let manualNotesEndMarker = "<!-- serial-notes: end notes -->"
+
+    /// Renders user-authored Markdown notes above generated sections. Internal
+    /// Markdown is preserved exactly; only outer whitespace is trimmed so empty
+    /// drafts don't create a blank section.
+    static func manualNotesSection(_ notes: String?) -> String {
+        guard let trimmed = notes?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return ""
+        }
+        return "## Notes\n\n\(trimmed)\n\n\(manualNotesEndMarker)\n\n"
+    }
+
+    /// The line-index range of the manual `## Notes` section — heading through
+    /// closing sentinel — in a transcript already split on newlines. Nil when
+    /// either bound is missing (no notes, a pre-sentinel transcript, or the user
+    /// deleted the marker), in which case callers keep plain grammar scanning.
+    static func manualNotesLineRange(in lines: [String]) -> ClosedRange<Int>? {
+        guard let start = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == "## Notes"
+        }) else { return nil }
+        guard let end = ((start + 1)..<lines.count).first(where: {
+            lines[$0].trimmingCharacters(in: .whitespaces) == manualNotesEndMarker
+        }) else { return nil }
+        return start...end
+    }
+
+    /// Nesting depth of a Markdown list item from its leading whitespace: one
+    /// level per tab, one per pair of spaces (a lone trailing space adds none).
+    /// The single source of truth for list nesting — `ManualNotesMarkdownEditor`
+    /// renders indents/bullets from it and `MeetingExporter` nests `<ul>`/`<ol>`
+    /// from it, so what looks nested in the notepad exports nested to Notes.
+    static func listIndentLevel(of leadingWhitespace: some StringProtocol) -> Int {
+        var level = 0
+        var pendingSpaces = 0
+        for character in leadingWhitespace {
+            if character == "\t" {
+                level += 1
+                pendingSpaces = 0
+            } else if character == " " {
+                pendingSpaces += 1
+                if pendingSpaces == 2 {
+                    level += 1
+                    pendingSpaces = 0
+                }
+            }
+        }
+        return level
+    }
+
+    static func topSections(manualNotes: String?, summary: SummaryResult) -> String {
+        manualNotesSection(manualNotes) + summarySections(summary)
     }
 
     /// Renders the summary + action items sections that go between the header

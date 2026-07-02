@@ -88,6 +88,31 @@ struct MeetingExporterTests {
         #expect(html == "<ul><li>one</li><li>two</li></ul><p>after</p>")
     }
 
+    @Test("Nested bullets emit child lists inside the parent item")
+    func nestedBulletLists() {
+        // Tabs and space pairs both mean one level (TranscriptFormatter rule).
+        let html = MeetingExporter.htmlBody(fromMarkdown: "* top\n\t* nested tab\n  * nested spaces\n* top again")
+        #expect(html == "<ul><li>top<ul><li>nested tab</li><li>nested spaces</li></ul></li><li>top again</li></ul>")
+    }
+
+    @Test("Ordered lists render as <ol> and nest under bullets")
+    func orderedLists() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "1. first\n2. second\n\n* parent\n\t1. step")
+        #expect(html == "<ol><li>first</li><li>second</li></ol><ul><li>parent<ol><li>step</li></ol></li></ul>")
+    }
+
+    @Test("A list-type switch at the same level closes the previous list")
+    func listTypeSwitch() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "* bullet\n1. number")
+        #expect(html == "<ul><li>bullet</li></ul><ol><li>number</li></ol>")
+    }
+
+    @Test("A multi-level outdent closes every intermediate list")
+    func multiLevelOutdent() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "* a\n\t* b\n\t\t* c\n* d")
+        #expect(html == "<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li></ul>")
+    }
+
     // MARK: - Inline conversion
 
     @Test("Escapes HTML special characters")
@@ -132,10 +157,12 @@ struct MeetingExporterTests {
         #expect(MeetingExporter.inlineHTML("**bold *and italic* here**") == "<b>bold <i>and italic</i> here</b>")
     }
 
-    @Test("Triple-star / straddling markers degrade to literal asterisks, never crossed tags")
+    @Test("Triple-star renders bold-italic; straddling markers still never cross tags")
     func emphasisNeverCrossesTags() {
-        // Previously these produced overlapping tags like <b><i>triple</b></i>.
-        #expect(MeetingExporter.inlineHTML("***triple***") == "<b>*triple</b>*")
+        // `***x***` is a first-class bold-italic span (mirrors the notepad editor).
+        #expect(MeetingExporter.inlineHTML("***triple***") == "<b><i>triple</i></b>")
+        // A single `*` straddling a `**` boundary still degrades to literal
+        // asterisks rather than overlapping tags like <b><i>one</b></i>.
         #expect(MeetingExporter.inlineHTML("**one *two** three*") == "<b>one *two</b> three*")
     }
 

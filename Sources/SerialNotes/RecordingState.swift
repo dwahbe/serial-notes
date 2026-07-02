@@ -35,6 +35,9 @@ final class RecordingState {
     @ObservationIgnored weak var storageSettings: StorageSettings?
     @ObservationIgnored weak var identitySettings: IdentitySettings?
     @ObservationIgnored weak var exportSettings: ExportSettings?
+    @ObservationIgnored weak var manualNotesSettings: ManualNotesSettings?
+    @ObservationIgnored weak var manualNotesStore: ManualNotesStore?
+    @ObservationIgnored weak var manualNotesWindowController: ManualNotesWindowController?
 
     private var timer: Timer?
     private var startDate: Date?
@@ -125,6 +128,7 @@ final class RecordingState {
                 summarySettings: summarySnapshot,
                 micPrimaryName: micDisplayName
             )
+            manualNotesStore?.beginSession(sessionDir: sessionDir)
 
             prepareSpeakerCandidatesForCurrentSession()
 
@@ -151,6 +155,9 @@ final class RecordingState {
             currentSessionDir = sessionDir
             elapsedTime = 0
             onRecordingChange?()
+            if manualNotesSettings?.openNotepadWhenRecordingStarts == true {
+                manualNotesWindowController?.present()
+            }
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let startDate = self.startDate else { return }
@@ -160,6 +167,7 @@ final class RecordingState {
         } catch {
             // Start failed — clear the in-flight flag and re-notify so the detector
             // resumes normal evaluation (it suppressed itself on the entry ping).
+            manualNotesStore?.discardIfEmptyAfterStartFailure()
             isStarting = false
             errorMessage = error.localizedDescription
             onRecordingChange?()
@@ -203,6 +211,8 @@ final class RecordingState {
         let sessionStart = startDate
         let sessionDir = currentSessionDir
         let summaryCutoff = Self.summaryCutoff(for: reason, sessionStart: sessionStart)
+        let manualNotesMarkdown = manualNotesStore?.snapshotAndEndSession()
+        manualNotesWindowController?.dismiss()
         startDate = nil
         currentSessionDir = nil
         // Mark finalizing *before* notifying, so the detector both (a) keeps its
@@ -230,6 +240,7 @@ final class RecordingState {
             summarySettings: summarySnapshot,
             keepAudioFiles: keepAudioFiles,
             summaryCutoff: summaryCutoff,
+            manualNotesMarkdown: manualNotesMarkdown,
             exportTargets: exportTargets,
             meetingDiagnostics: diagnostics
         )
@@ -244,10 +255,11 @@ final class RecordingState {
         // termination behind an uncancellable offline diarization.
         let isAppQuit = context.stopReason.isAppQuit
         let candidates = await speakerCandidatesForStop(isAppQuit: isAppQuit)
-        let pendingSpeakers = await transcriptionService.endSession(
+        let finalization = await transcriptionService.endSession(
             summarySettings: context.summarySettings,
             keepAudioFiles: context.keepAudioFiles,
             summaryCutoff: context.summaryCutoff,
+            manualNotesMarkdown: context.manualNotesMarkdown,
             // App quit still applies known identities when models/candidates are
             // available, but continues to skip clip extraction and naming UI.
             extractSpeakers: !isAppQuit,
@@ -260,11 +272,23 @@ final class RecordingState {
                 Task { @MainActor in self?.finalizationPhase = phase }
             }
         )
+        if let manualNotesStore {
+            await manualNotesStore.completeSnapshotWrite(succeeded: finalization.manualNotesCommitted)
+        }
+        // If notes existed but didn't make it into transcript.md, re-surface the
+        // notepad (now showing the recovery message) so the failure isn't silent.
+        // On app quit there's no UI left to show — the store instead stashed a
+        // recovery pointer that restores the notes on the next launch.
+        // (snapshotAndEndSession returns nil for empty drafts, so non-nil means
+        // notes were present.)
+        if context.manualNotesMarkdown != nil, !finalization.manualNotesCommitted, !isAppQuit {
+            manualNotesWindowController?.present()
+        }
         finalizeSession(
             context: context,
             stats: stats
         )
-        notifyUnnamedSpeakersIfNeeded(context: context, count: pendingSpeakers)
+        notifyUnnamedSpeakersIfNeeded(context: context, count: finalization.pendingSpeakerCount)
         exportIfNeeded(context)
         speakerCandidatePreparationTask?.cancel()
         speakerCandidatePreparationTask = nil
@@ -524,6 +548,7 @@ private struct StopContext: Sendable {
     let summarySettings: SummarySettings.Snapshot
     let keepAudioFiles: Bool
     let summaryCutoff: TimeInterval?
+    let manualNotesMarkdown: String?
     let exportTargets: Set<ExportTarget>
     let meetingDiagnostics: MeetingSessionDiagnostics?
 }

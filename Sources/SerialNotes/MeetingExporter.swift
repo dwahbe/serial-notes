@@ -227,7 +227,9 @@ enum MeetingExporter {
     /// emits: `#`/`##` headings, `-`/`*` bullets, `1.` ordered items, `- [ ]`/
     /// `- [x]` task items — all nestable by indentation — and `***bold-italic***`/
     /// `**bold**`/`*italic*` inline, including both inline and block-form speaker
-    /// entries (each non-empty line becomes its own paragraph).
+    /// entries (each non-empty line becomes its own paragraph). Blank lines in the
+    /// source become explicit empty lines — Notes gives `<p>` no margin, so without
+    /// them the whole note collapses into a wall of text.
     static func htmlBody(fromMarkdown markdown: String) -> String {
         var html = ""
         // Open lists as (tag, indent level), innermost last. An `<li>` stays open
@@ -236,6 +238,18 @@ enum MeetingExporter {
         // to show real nesting. Levels come from `TranscriptFormatter
         // .listIndentLevel`, the same rule the notepad editor renders from.
         var openLists: [(tag: String, level: Int)] = []
+        // Blank lines are emitted lazily, just before the next content block: a run
+        // of blanks collapses to one (CRLF sources split into extra empties), and
+        // leading/trailing blanks vanish. `<div><br></div>` is Notes' own
+        // serialization of an empty line; an empty `<p>` gets dropped by its parser.
+        var pendingBlank = false
+
+        func flushPendingBlank() {
+            if pendingBlank {
+                html += "<div><br></div>"
+                pendingBlank = false
+            }
+        }
 
         func closeInnermostList() {
             if let list = openLists.popLast() {
@@ -270,8 +284,10 @@ enum MeetingExporter {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty {
                 closeAllLists()
+                if !html.isEmpty { pendingBlank = true }
                 continue
             }
+            flushPendingBlank()
             let level = TranscriptFormatter.listIndentLevel(
                 of: rawLine.prefix(while: { $0 == " " || $0 == "\t" })
             )

@@ -80,12 +80,28 @@ struct MeetingExporterTests {
         // Block-form turn: header line and body line each become a paragraph.
         #expect(html.contains("<p><b>Person 2</b> (00:01:10):</p>"))
         #expect(html.contains("<p>This is a longer block-form turn.</p>"))
+        // Consecutive speaker turns keep their blank-line separation.
+        #expect(html.contains("welcome.</p><div><br></div><p><b>Person 2</b>"))
     }
 
     @Test("Bullet lists are wrapped in a single <ul> and closed on a blank line")
     func bulletListGrouping() {
         let html = MeetingExporter.htmlBody(fromMarkdown: "- one\n- two\n\nafter")
-        #expect(html == "<ul><li>one</li><li>two</li></ul><p>after</p>")
+        #expect(html == "<ul><li>one</li><li>two</li></ul><div><br></div><p>after</p>")
+    }
+
+    @Test("Blank lines become empty lines so entries don't run together in Notes")
+    func blankLinesBecomeSpacers() {
+        // The v0.2.0 feedback: Notes gives <p> no margin, so dropping the source's
+        // blank lines rendered the transcript as a wall of text.
+        let html = MeetingExporter.htmlBody(fromMarkdown: "**A** (00:00:01): hi\n\n**B** (00:00:02): hey")
+        #expect(html == "<p><b>A</b> (00:00:01): hi</p><div><br></div><p><b>B</b> (00:00:02): hey</p>")
+    }
+
+    @Test("Blank runs collapse to one spacer; leading and trailing blanks vanish")
+    func blankRunsCollapse() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "\n\nfirst\n\n\n\nsecond\n\n")
+        #expect(html == "<p>first</p><div><br></div><p>second</p>")
     }
 
     @Test("Nested bullets emit child lists inside the parent item")
@@ -98,7 +114,7 @@ struct MeetingExporterTests {
     @Test("Ordered lists render as <ol> and nest under bullets")
     func orderedLists() {
         let html = MeetingExporter.htmlBody(fromMarkdown: "1. first\n2. second\n\n* parent\n\t1. step")
-        #expect(html == "<ol><li>first</li><li>second</li></ol><ul><li>parent<ol><li>step</li></ol></li></ul>")
+        #expect(html == "<ol><li>first</li><li>second</li></ol><div><br></div><ul><li>parent<ol><li>step</li></ol></li></ul>")
     }
 
     @Test("A list-type switch at the same level closes the previous list")

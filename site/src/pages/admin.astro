@@ -91,6 +91,9 @@ for (let i = 29; i >= 0; i--) {
   last30.push({ day: key, count: byDay.get(key) ?? 0 });
 }
 const maxDay = Math.max(1, ...last30.map((d) => d.count));
+// Mid y-axis tick only when it lands on an integer — a rounded label at the
+// 50% line would misstate the scale.
+const midTick = maxDay % 2 === 0 ? maxDay / 2 : null;
 
 const checksToday = byDay.get(today) ?? 0;
 const weekAvg = Math.round(
@@ -219,14 +222,26 @@ const releaseDate = (iso: string) =>
                 {pingsError}
               </p>
             ) : (
-              <div class="mt-4 flex h-32 items-end gap-[3px] rounded-lg border border-line p-3">
-                {last30.map((d) => (
-                  <div
-                    class="flex-1 rounded-sm bg-ink/80"
-                    style={`height: ${Math.max(2, Math.round((d.count / maxDay) * 100))}%${d.count === 0 ? "; opacity: 0.12" : ""}`}
-                    title={`${d.day}: ${d.count}`}
-                  />
-                ))}
+              <div class="mt-4 flex gap-2">
+                <div class="flex h-32 flex-col justify-between py-3 text-right font-mono text-[10px] leading-none text-faint">
+                  <span>{maxDay}</span>
+                  {midTick !== null && <span>{midTick}</span>}
+                  <span>0</span>
+                </div>
+                <div class="h-32 min-w-0 flex-1 rounded-lg border border-line p-3">
+                  <div class="relative flex h-full items-end gap-[3px]">
+                    {midTick !== null && (
+                      <div class="absolute inset-x-0 bottom-1/2 border-t border-dashed border-line-soft" />
+                    )}
+                    {last30.map((d) => (
+                      <div
+                        class="relative flex-1 rounded-sm bg-ink/80"
+                        style={`height: ${Math.max(2, Math.round((d.count / maxDay) * 100))}%${d.count === 0 ? "; opacity: 0.12" : ""}`}
+                        title={`${d.day}: ${d.count}`}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </section>

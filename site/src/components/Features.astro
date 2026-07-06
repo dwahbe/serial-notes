@@ -2,29 +2,29 @@
 // "How it works" — a scroll-driven stepper (Dia-style). On desktop the two-column
 // panel pins for the section's whole scroll: the step list stays put while the
 // active step's focus + description and the matching Mac "stage" visual change as
-// you scroll (detect → record → summarize → export). The list never travels up
-// the page — only the focus moves between titles, Dia-style.
+// you scroll (detect → take notes → summarize → export). The list never travels
+// up the page — only the focus moves between titles, Dia-style.
 // Scroll-driven on desktop; auto-cycles on mobile; static under reduced motion.
 const steps = [
   {
     n: "01",
     title: "Captures every meeting",
-    body: "Serial Notes watches for Zoom, Teams, FaceTime, Slack and more. The moment a call starts, a notification offers one-click recording — and it stops itself when the call ends.",
+    body: "The moment a Zoom, Teams, or FaceTime call starts, a notification offers one-click recording, and it stops itself when the call ends. Google Meet, a phone call, anything your Mac can hear: one click from the menu bar records it.",
   },
   {
     n: "02",
-    title: "Transcribes on your Mac",
-    body: "Audio is transcribed on-device with automatic speaker labels. Nothing leaves your Mac, and after a one-time setup it works fully offline.",
+    title: "Take notes as you talk",
+    body: "A built-in notepad floats above the call, even over full-screen Zoom, and styles your Markdown live as you type. When the meeting wraps, your notes land in the same file, right beside the transcript.",
   },
   {
     n: "03",
     title: "Summaries &amp; action items",
-    body: "When the meeting wraps, Apple Intelligence drafts a tight summary and a checklist of to-dos — generated right on your machine.",
+    body: "Everything is transcribed on your Mac with automatic speaker labels, then Apple Intelligence drafts a tight summary and a checklist of to-dos. Nothing ever leaves your machine.",
   },
   {
     n: "04",
     title: "Exports clean Markdown",
-    body: 'Every meeting saves itself as one tidy <span class="font-mono text-[13.5px]">.md</span> file in the folder you choose — open it in Notion, Obsidian, or Apple Notes, anywhere plain text goes.',
+    body: 'Every meeting saves itself as one tidy <span class="font-mono text-[13.5px]">.md</span> file in the folder you choose. Open it in Notion, Obsidian, or Apple Notes, anywhere plain text goes.',
   },
 ];
 ---
@@ -70,7 +70,7 @@ const steps = [
               <span data-mbicon class="relative grid h-[19px] w-[19px] place-items-center rounded-[5px] bg-black/[0.08] text-ink">
                 <!-- Canonical brand mark (site/public/favicon.svg) — ring + the
                      6-bar waveform; keep these coords in lockstep with it. -->
-                <svg width="15" height="15" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <svg class="mb-idle" width="15" height="15" viewBox="0 0 32 32" fill="none" aria-hidden="true">
                   <circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="2"></circle>
                   <g class="wf-bars" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                     <line x1="9.5" y1="13.75" x2="9.5" y2="18.25"></line>
@@ -81,7 +81,20 @@ const steps = [
                     <line x1="22.5" y1="14.5" x2="22.5" y2="17.5"></line>
                   </g>
                 </svg>
-                <span class="rec-dot absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500 opacity-0 ring-2 ring-white"></span>
+                <!-- Recording variant — the app's real "live" state: the filled
+                     orange disc (BrandFilledMark, Color.recordingLive #E5822E)
+                     with the waveform knocked out in white. -->
+                <svg class="mb-rec" width="15" height="15" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                  <circle cx="16" cy="16" r="13" fill="#E5822E"></circle>
+                  <g class="wf-bars" stroke="#fff" stroke-width="1.6" stroke-linecap="round">
+                    <line x1="9.5" y1="13.75" x2="9.5" y2="18.25"></line>
+                    <line x1="12.1" y1="12" x2="12.1" y2="20"></line>
+                    <line x1="14.7" y1="10.75" x2="14.7" y2="21.25"></line>
+                    <line x1="17.3" y1="13.5" x2="17.3" y2="18.5"></line>
+                    <line x1="19.9" y1="12" x2="19.9" y2="20"></line>
+                    <line x1="22.5" y1="14.5" x2="22.5" y2="17.5"></line>
+                  </g>
+                </svg>
               </span>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 20h.01"></path>
@@ -134,26 +147,30 @@ const steps = [
               </div>
             </div>
 
-            <!-- ░░ VISUAL 1 — recording popover ░░ -->
+            <!-- ░░ VISUAL 1 — floating notepad while recording ░░
+                 The only recording indicator is the real one: the menu-bar mark
+                 flips to the filled-orange live state (via .is-recording). -->
             <div data-vis="1" class="vis absolute inset-0">
-              <div class="absolute right-4 top-9 w-[260px] sm:w-[280px]">
-                <div class="overflow-hidden rounded-2xl border border-black/[0.07] bg-white/95 p-5 shadow-[0_22px_55px_-14px_rgba(0,0,0,0.3)] backdrop-blur-xl">
-                  <div class="flex items-center justify-center gap-2.5">
-                    <span class="relative flex h-2.5 w-2.5">
-                      <span class="rec-ping absolute inline-flex h-full w-full rounded-full bg-red-500/70"></span>
-                      <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500"></span>
-                    </span>
-                    <span class="text-[15px] font-semibold tracking-tight text-ink">Recording</span>
+              <!-- the floating notepad panel — mirrors the app's NSPanel, with
+                   the Markdown already live-styled (markers hidden, bullets drawn). -->
+              <div class="absolute inset-x-0 top-9 grid place-items-center px-6 desk:inset-y-0">
+                <div
+                  class="w-full max-w-[420px] overflow-hidden rounded-xl border border-black/[0.07] bg-white/95 shadow-[0_22px_55px_-14px_rgba(0,0,0,0.3)] backdrop-blur-xl"
+                >
+                  <div class="flex items-center gap-2 border-b border-line px-4 py-3">
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#ff5f57] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#febc2e] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#28c840] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
+                    <span class="ml-2 text-[11.5px] font-medium text-faint">Notepad — Serial Notes</span>
                   </div>
-                  <div data-timer class="mt-3 text-center font-mono text-[34px] font-medium tabular-nums tracking-tight text-ink">
-                    00:00
-                  </div>
-                  <div class="mt-4 flex w-full items-center justify-center gap-2 rounded-[10px] bg-ink py-2.5 text-[13.5px] font-medium text-white">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"></circle>
-                      <rect x="8.5" y="8.5" width="7" height="7" rx="1.5" fill="currentColor"></rect>
-                    </svg>
-                    Stop Recording
+                  <div class="px-6 py-5 text-[14px] leading-[1.8] text-muted">
+                    <p class="text-[15.5px] font-semibold tracking-tight text-ink">Standup notes</p>
+                    <ul class="mt-2 space-y-1.5">
+                      <li class="flex gap-2.5"><span class="text-faint">•</span><span>Ask Priya for the new onboarding copy</span></li>
+                      <li class="flex gap-2.5"><span class="text-faint">•</span><span>Design sign-off lands <strong class="font-semibold text-ink">Thursday</strong></span></li>
+                      <li class="flex gap-2.5 pl-6"><span class="text-faint">•</span><span>move the launch review earlier?</span></li>
+                    </ul>
+                    <p class="mt-2.5">Auth migration is the last blocker<span class="np-caret"></span></p>
                   </div>
                 </div>
               </div>
@@ -207,19 +224,20 @@ const steps = [
               <div class="absolute inset-x-0 top-9 grid place-items-center px-6 desk:inset-y-0">
                 <div class="w-full max-w-[400px] overflow-hidden rounded-xl border border-line bg-paper shadow-[0_18px_50px_-16px_rgba(0,0,0,0.28)]">
                   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
-                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
-                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
-                    <span class="h-2.5 w-2.5 rounded-full bg-[#e5e5e5]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#ff5f57] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#febc2e] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
+                    <span class="h-2.5 w-2.5 rounded-full bg-[#28c840] ring-inset ring-[0.5px] ring-black/[0.12]"></span>
                     <span class="ml-2 font-mono text-[11px] text-faint">weekly-standup.md</span>
                   </div>
                   <div class="relative px-5 py-4 font-mono text-[12px] leading-[1.8]">
                     <p><span class="text-faint">#</span> <span class="font-semibold text-ink">Weekly Standup</span></p>
                     <p class="text-faint">June 1, 2026 · 6 participants</p>
+                    <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Notes</span></p>
+                    <p class="text-muted"><span class="text-faint">-</span> Ask Priya for the new onboarding copy</p>
                     <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Summary</span></p>
                     <p class="text-muted">Team aligned on the Q3 launch. Auth migration is the last blocker.</p>
                     <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Action items</span></p>
                     <p class="text-muted"><span class="text-faint">- [ ]</span> Dylan — ship the auth migration PR</p>
-                    <p class="text-muted"><span class="text-faint">- [x]</span> <span class="line-through decoration-faint">Sam — book the launch review</span></p>
                     <p class="mt-3"><span class="text-faint">##</span> <span class="font-semibold text-ink">Transcript</span></p>
                     <p><span class="font-semibold text-ink">You</span> <span class="text-faint">09:02</span> Let's start with the blockers.</p>
                     <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-paper to-transparent"></div>
@@ -328,20 +346,36 @@ const steps = [
     opacity: 1;
   }
 
-  [data-howitworks].is-recording .rec-dot {
-    opacity: 1;
+  /* Menu-bar mark: outline when idle, the filled-orange live mark while
+     recording — the same state flip the real app makes. (The script toggles
+     .is-recording on [data-stage], so scope to it, not the section.) */
+  .mb-rec {
+    display: none;
   }
-  .rec-ping {
-    animation: ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  [data-stage].is-recording .mb-idle {
+    display: none;
   }
-  @keyframes ping {
-    75%, 100% { transform: scale(2.2); opacity: 0; }
+  [data-stage].is-recording .mb-rec {
+    display: block;
+  }
+  /* Blinking insertion caret in the notepad visual. */
+  .np-caret {
+    display: inline-block;
+    width: 1.5px;
+    height: 1em;
+    margin-left: 1px;
+    vertical-align: -0.15em;
+    background: var(--color-ink);
+    animation: caret-blink 1.1s steps(1) infinite;
+  }
+  @keyframes caret-blink {
+    50% { opacity: 0; }
   }
   .wf-bars line {
     transform-box: fill-box;
     transform-origin: center;
   }
-  [data-howitworks].is-recording .wf-bars line {
+  [data-stage].is-recording .wf-bars line {
     animation: wf 0.9s ease-in-out infinite;
   }
   .wf-bars line:nth-child(1) { animation-delay: 0s; }
@@ -414,7 +448,6 @@ const steps = [
     const stage = section.querySelector<HTMLElement>("[data-stage]")!;
     const steps = Array.from(section.querySelectorAll<HTMLElement>("[data-step]"));
     const vis = Array.from(stage.querySelectorAll<HTMLElement>(".vis"));
-    const timerEl = stage.querySelector<HTMLElement>("[data-timer]")!;
     const N = steps.length;
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -425,21 +458,6 @@ const steps = [
     const nextBtn = section.querySelector<HTMLButtonElement>("[data-next]");
 
     let active = -1;
-    let recTimer: ReturnType<typeof setInterval> | null = null;
-
-    function startRecTimer() {
-      if (recTimer) return;
-      let s = 0;
-      timerEl.textContent = "00:00";
-      recTimer = setInterval(() => {
-        s = (s + 1) % 60;
-        timerEl.textContent = "00:" + String(s).padStart(2, "0");
-      }, 1000);
-    }
-    function stopRecTimer() {
-      if (recTimer) clearInterval(recTimer);
-      recTimer = null;
-    }
 
     function setActive(i: number) {
       if (i === active) return;
@@ -448,8 +466,6 @@ const steps = [
       vis.forEach((v, idx) => v.classList.toggle("is-active", idx === i));
       caps.forEach((c, idx) => c.classList.toggle("is-active", idx === i));
       stage.classList.toggle("is-recording", i === 1);
-      if (i === 1) startRecTimer();
-      else stopRecTimer();
       if (prevBtn) prevBtn.disabled = i <= 0;
       if (nextBtn) nextBtn.disabled = i >= N - 1;
     }

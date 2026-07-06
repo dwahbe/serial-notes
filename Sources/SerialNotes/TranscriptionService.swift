@@ -89,20 +89,29 @@ actor TranscriptionService {
 
     // MARK: - Model Lifecycle
 
+    /// The production streaming-ASR construction path — tests pin its compute
+    /// units, so route any new manager creation through here.
+    static func makeStreamingAsrManager() -> StreamingEouAsrManager {
+        StreamingEouAsrManager(configuration: ModelComputePolicy.configuration())
+    }
+
     func downloadModelsIfNeeded() async throws {
         guard !modelsLoaded else {
             prefetchFinalAsrModelsIfNeeded()
             return
         }
 
-        let micManager = StreamingEouAsrManager()
-        let sysManager = StreamingEouAsrManager()
+        let micManager = Self.makeStreamingAsrManager()
+        let sysManager = Self.makeStreamingAsrManager()
         try await micManager.loadModels()
         try await sysManager.loadModels()
 
-        let sysDia = LSEENDDiarizer()
+        // Explicit .cpuOnly (also FluidAudio's default, and its documented
+        // fastest units for LS-EEND) so no load site inherits a GPU-capable
+        // default — see ModelComputePolicy.
+        let sysDia = LSEENDDiarizer(computeUnits: .cpuOnly)
         try await sysDia.initialize()
-        let micDia = LSEENDDiarizer()
+        let micDia = LSEENDDiarizer(computeUnits: .cpuOnly)
         try await micDia.initialize()
 
         sideStates[.mic]?.asr = micManager
@@ -1330,7 +1339,10 @@ actor TranscriptionService {
         guard cachedFinalAsrModels == nil else { return }
         guard finalAsrModelsTask == nil else { return }
         finalAsrModelsTask = Task {
-            try await AsrModels.downloadAndLoad(version: .v2)
+            try await AsrModels.downloadAndLoad(
+                configuration: ModelComputePolicy.configuration(),
+                version: .v2
+            )
         }
     }
 

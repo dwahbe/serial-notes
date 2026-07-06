@@ -147,7 +147,9 @@ actor OfflineSpeakerIdentifier {
         if let modelLoadTask {
             task = modelLoadTask
         } else {
-            let newTask = Task { try await OfflineDiarizerModels.load() }
+            // Not OfflineDiarizerModels.load() — that hardcodes GPU-capable
+            // compute units; the loader applies ModelComputePolicy.
+            let newTask = Task { try await OfflineDiarizerModelLoader.load() }
             modelLoadTask = newTask
             task = newTask
         }

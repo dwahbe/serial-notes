@@ -362,6 +362,7 @@ final class RecordingState {
             stopReason: context.stopReason.diagnosticsValue,
             summaryCutoffSeconds: context.summaryCutoff,
             capturePath: stats.path?.rawValue ?? "unknown",
+            inferenceComputeUnits: ModelComputePolicy.diagnosticsLabel,
             mic: stats.mic,
             system: stats.system,
             enrolledProfiles: voiceProfileStore?.profiles.map { $0.name } ?? [],
@@ -535,6 +536,9 @@ private struct SessionDiagnostics: Codable {
     let stopReason: String
     let summaryCutoffSeconds: TimeInterval?
     let capturePath: String
+    /// Which compute units the CoreML models loaded with (ModelComputePolicy)
+    /// — lets a future GPU-fault storm be correlated post-hoc.
+    let inferenceComputeUnits: String
     let mic: AudioStreamStats
     let system: AudioStreamStats
     let enrolledProfiles: [String]

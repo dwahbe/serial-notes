@@ -3,6 +3,8 @@ import FluidAudio
 import Foundation
 import Testing
 
+@testable import SerialNotes
+
 @Suite("Transcription Pipeline", .serialized)
 struct TranscriptionTests {
     /// Generate speech audio using macOS `say` command.
@@ -75,7 +77,7 @@ struct TranscriptionTests {
 
     @Test("ASR model loads and transcribes speech")
     func asrTranscription() async throws {
-        let asr = StreamingEouAsrManager()
+        let asr = TranscriptionService.makeStreamingAsrManager()
         try await asr.loadModels()
 
         let (url, samples) = try Self.generateSpeech("Hello world, this is a test of speech recognition.")
@@ -108,7 +110,7 @@ struct TranscriptionTests {
 
     @Test("LS-EEND diarizer processes audio and returns timeline")
     func diarization() async throws {
-        let diarizer = LSEENDDiarizer()
+        let diarizer = LSEENDDiarizer(computeUnits: .cpuOnly)
         try await diarizer.initialize()
 
         let (url, samples) = try Self.generateSpeech(

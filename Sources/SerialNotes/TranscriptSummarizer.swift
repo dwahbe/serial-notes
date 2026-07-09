@@ -395,6 +395,20 @@ enum SummarizerTextProcessing {
                 current.removeAll(keepingCapacity: true)
                 currentWords = 0
             }
+            if turnWords > maxWords {
+                // A single turn can exceed the whole budget (a long merged
+                // monologue). Packed as-is it would overflow the model's
+                // context window and the request's content would silently
+                // vanish from the summary — split it on word boundaries
+                // instead. The tail piece stays in `current` so following
+                // turns keep packing efficiently.
+                var pieces = splitOversizedTurn(turn, maxWords: maxWords)
+                let tail = pieces.removeLast()
+                chunks.append(contentsOf: pieces)
+                current.append(tail)
+                currentWords = wordCount(tail)
+                continue
+            }
             current.append(turn)
             currentWords += turnWords
         }
@@ -402,6 +416,37 @@ enum SummarizerTextProcessing {
             chunks.append(current.joined(separator: "\n\n"))
         }
         return chunks
+    }
+
+    /// Split one oversized turn into word-bounded pieces of at most `maxWords`.
+    /// Continuation pieces are re-prefixed with the turn's speaker header so the
+    /// model keeps attribution; paragraph layout inside the turn is flattened,
+    /// which the summarizer doesn't need.
+    static func splitOversizedTurn(_ turn: String, maxWords: Int) -> [String] {
+        guard maxWords > 0 else { return [turn] }
+        let words = turn.split(whereSeparator: { $0.isWhitespace })
+        guard words.count > maxWords else { return [turn] }
+
+        let continuationPrefix = speakerHeaderPrefix(turn)
+        var pieces: [String] = []
+        var start = 0
+        while start < words.count {
+            let end = min(start + maxWords, words.count)
+            var piece = words[start..<end].joined(separator: " ")
+            if start > 0, let continuationPrefix {
+                piece = "\(continuationPrefix) \(piece)"
+            }
+            pieces.append(piece)
+            start = end
+        }
+        return pieces
+    }
+
+    private static func speakerHeaderPrefix(_ turn: String) -> String? {
+        guard let firstLine = turn.components(separatedBy: "\n").first,
+              hasSpeakerHeader(firstLine),
+              let range = firstLine.range(of: "):") else { return nil }
+        return String(firstLine[..<range.upperBound])
     }
 
     private static func splitOnSpeakerTurns(_ text: String) -> [String] {

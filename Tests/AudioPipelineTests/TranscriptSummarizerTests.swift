@@ -110,6 +110,38 @@ struct TranscriptSummarizerTests {
         }
     }
 
+    @Test("Chunking: a single turn larger than the budget is split, not passed through oversized")
+    func chunkingSplitsOversizedTurn() {
+        // A merged 30s-silence-free monologue renders as ONE turn; unsplit it
+        // would overflow the model context and its content would silently
+        // vanish from the summary.
+        let monologue = "**Person 1** (00:01:14): " + Array(repeating: "word", count: 250).joined(separator: " ")
+        let chunks = SummarizerTextProcessing.speakerTurnChunks(monologue, maxWords: 100)
+
+        #expect(chunks.count == 3)
+        for chunk in chunks {
+            // Continuation pieces re-carry the 3-word speaker prefix on top of
+            // the 100-word budget; nothing may exceed budget + prefix.
+            #expect(SummarizerTextProcessing.wordCount(chunk) <= 103)
+            #expect(chunk.hasPrefix("**Person 1** (00:01:14):"))
+        }
+    }
+
+    @Test("Chunking: the split tail still packs with following turns")
+    func chunkingOversizedTailPacksWithNextTurn() {
+        let monologue = "**Person 1** (00:00:01): " + Array(repeating: "alpha", count: 120).joined(separator: " ")
+        let reply = "**You** (00:02:00): " + Array(repeating: "beta", count: 20).joined(separator: " ")
+        let text = [monologue, reply].joined(separator: "\n\n")
+
+        let chunks = SummarizerTextProcessing.speakerTurnChunks(text, maxWords: 100)
+
+        // Piece 1 (100 words), then the ~23-word tail shares a chunk with the
+        // 21-word reply instead of standing alone.
+        #expect(chunks.count == 2)
+        #expect(chunks[1].contains("beta"))
+        #expect(chunks[1].contains("alpha"))
+    }
+
     @Test("Token-derived chunk words: scales budget by measured word density")
     func tokenDerivedChunkWordsScaling() {
         // 6000 words measured at 9000 tokens → 1.5 tokens/word. A 3072-token

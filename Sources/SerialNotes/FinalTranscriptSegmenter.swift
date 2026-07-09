@@ -29,16 +29,40 @@ enum FinalTranscriptSegmenter {
         var currentWordCount = 0
 
         for timing in timings {
-            if let previous = current.last,
-               shouldBreak(
-                   before: timing,
-                   after: previous,
-                   segmentStart: current[0].startTime,
-                   wordCount: currentWordCount
-               ) {
-                appendSegment(current, to: &segments)
-                current.removeAll(keepingCapacity: true)
-                currentWordCount = 0
+            if let previous = current.last {
+                if shouldBreak(
+                    before: timing,
+                    after: previous,
+                    segmentStart: current[0].startTime,
+                    wordCount: currentWordCount
+                ) {
+                    // A pure-punctuation token at a break closes the utterance
+                    // being flushed; carrying it into the next segment would
+                    // render a leading ". I am very tired". Its timing is
+                    // dropped so the closed segment's end (and attribution
+                    // midpoint) stays on the last spoken word rather than
+                    // stretching across the pause. A redundant mark — the
+                    // segment already ends punctuated — is ASR noise and is
+                    // dropped rather than rendered as "day.." or "word.,".
+                    if isOrphanPunctuation(timing.token) {
+                        let trailing = endsWithBindingPunctuation(previous.token) ? "" : timing.token
+                        appendSegment(current, trailing: trailing, to: &segments)
+                        current.removeAll(keepingCapacity: true)
+                        currentWordCount = 0
+                        continue
+                    }
+                    appendSegment(current, to: &segments)
+                    current.removeAll(keepingCapacity: true)
+                    currentWordCount = 0
+                }
+            } else if isOrphanPunctuation(timing.token) {
+                // A pure-punctuation token must never open a segment. `current`
+                // is only empty here at stream start or right after an orphan
+                // glue (consecutive punctuation tokens) — bind the mark to the
+                // previous segment's text, or drop it when there is nothing to
+                // bind to.
+                glueTrailingPunctuation(timing.token, onto: &segments)
+                continue
             }
 
             current.append(timing)
@@ -65,9 +89,13 @@ enum FinalTranscriptSegmenter {
         return TranscriptTextProcessing.hasTerminalPunctuation(previous.token) && wordCount >= minWordsForSentenceBreak
     }
 
-    private static func appendSegment(_ timings: [TokenTiming], to segments: inout [FinalTranscriptSegment]) {
+    private static func appendSegment(
+        _ timings: [TokenTiming],
+        trailing: String = "",
+        to segments: inout [FinalTranscriptSegment]
+    ) {
         guard let first = timings.first, let last = timings.last else { return }
-        let text = normalizedText(timings.map(\.token).joined())
+        let text = normalizedText(timings.map(\.token).joined() + trailing)
         guard !text.isEmpty else { return }
 
         segments.append(FinalTranscriptSegment(
@@ -106,12 +134,38 @@ enum FinalTranscriptSegmenter {
         }.count
     }
 
+    private static func isOrphanPunctuation(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && trimmed.allSatisfy(isPunctuation)
+    }
+
+    private static func endsWithBindingPunctuation(_ text: String) -> Bool {
+        guard let last = text.trimmingCharacters(in: .whitespacesAndNewlines).last else {
+            return false
+        }
+        return isPunctuation(last)
+    }
+
+    /// Bind an orphan punctuation token to the most recently emitted segment.
+    /// Dropped when there is no previous segment (stream-initial punctuation has
+    /// no words to bind to) or the segment already ends punctuated (redundant).
+    /// The segment's timing is left untouched for the same reason the break-glue
+    /// drops it: attribution midpoints must stay on real speech.
+    private static func glueTrailingPunctuation(
+        _ token: String,
+        onto segments: inout [FinalTranscriptSegment]
+    ) {
+        guard let last = segments.last, !endsWithBindingPunctuation(last.text) else { return }
+        let text = normalizedText(last.text + token)
+        guard !text.isEmpty else { return }
+        segments[segments.count - 1] = FinalTranscriptSegment(
+            text: text,
+            start: last.start,
+            end: last.end
+        )
+    }
+
     private static func isPunctuation(_ character: Character) -> Bool {
-        character == "." ||
-            character == "," ||
-            character == "!" ||
-            character == "?" ||
-            character == ";" ||
-            character == ":"
+        TranscriptTextProcessing.leftBindingPunctuation.contains(character)
     }
 }

@@ -434,6 +434,13 @@ enum TranscriptTextProcessing {
         return last == "." || last == "!" || last == "?"
     }
 
+    /// Punctuation that binds to the word before it. `FinalTranscriptSegmenter`'s
+    /// orphan-token glue and space-collapse normalization and `TranscriptTurnMerger`'s
+    /// fragment joins all consult this one set — the orphan-punctuation pipeline spans
+    /// both files, so a private copy in either would silently drift. Distinct from
+    /// `hasTerminalPunctuation`, which is deliberately narrower (sentence enders only).
+    static let leftBindingPunctuation: Set<Character> = [".", ",", "!", "?", ";", ":"]
+
     private static func normalizedToken(_ token: String) -> String {
         token.lowercased().unicodeScalars.filter { scalar in
             CharacterSet.alphanumerics.contains(scalar) || scalar.value == 39

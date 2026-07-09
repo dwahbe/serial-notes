@@ -127,7 +127,8 @@ enum SpeakerReattribution {
                     source: entry.source,
                     speaker: speaker.label,
                     text: entry.text,
-                    timestamp: entry.timestamp
+                    timestamp: entry.timestamp,
+                    end: entry.end
                 )
             }
             let leftoverLabel = leftoverLabelsByOriginalLabel[entry.speaker] ?? {
@@ -139,7 +140,8 @@ enum SpeakerReattribution {
                 source: entry.source,
                 speaker: leftoverLabel,
                 text: entry.text,
-                timestamp: entry.timestamp
+                timestamp: entry.timestamp,
+                end: entry.end
             )
         }
         return ReattributionResult(entries: reattributed, leftoverLabelsByOriginalLabel: leftoverLabelsByOriginalLabel)

@@ -260,18 +260,32 @@ actor TranscriptionService {
         let finalHeader = TranscriptFormatter.header(date: sessionDate ?? sessionStart ?? Date(), duration: duration)
 
         onPhase?(.improvingTranscript)
-        let highAccuracyRender = await highAccuracyTranscript(header: finalHeader)
+        let highAccuracyRender = await highAccuracyTranscript(
+            header: finalHeader,
+            mergeBoundary: summaryCutoff
+        )
 
         var pendingTranscriptWrite: String?
-        var needsStreamingHeaderRewrite = false
         if let highAccuracyRender {
             try? transcriptHandle?.close()
             transcriptHandle = nil
             finalTranscriptEntries = highAccuracyRender.entries
             pendingTranscriptWrite = highAccuracyRender.text
         } else {
+            // Final ASR unavailable — re-render the streaming entries instead of
+            // keeping the raw per-EOU file with a patched header. The entry array
+            // is populated behind the exact guards that wrote the streaming file
+            // (flush floor + echo suppression), so content is identical; the
+            // render adds the final header and the same turn merging every other
+            // path gets. Streaming timestamps are EOU-window midpoints, so gap
+            // measurement here is approximate — acceptable next to shipping the
+            // fragmentation the merge exists to fix.
             try? transcriptHandle?.close()
-            needsStreamingHeaderRewrite = true
+            pendingTranscriptWrite = renderEntries(
+                header: finalHeader,
+                entries: finalTranscriptEntries,
+                mergeBoundary: summaryCutoff
+            )
         }
         transcriptHandle = nil
 
@@ -298,23 +312,21 @@ actor TranscriptionService {
                     transcriptEntries: finalTranscriptEntries,
                     extractSpeakerClips: extractSpeakers,
                     timeout: offlineIdentityTimeout,
-                    requirePreparedModels: requirePreparedOfflineModels
+                    requirePreparedModels: requirePreparedOfflineModels,
+                    mergeBoundary: summaryCutoff
                 ) {
                     pendingSpeakerCount = count
                     offlinePassRan = true
                     pendingTranscriptWrite = nil
-                    needsStreamingHeaderRewrite = false
                 }
             }
 
             // If the offline pass did not write a re-attributed render, put the
-            // high-accuracy transcript or final streaming header on disk now. This
+            // high-accuracy or re-rendered streaming transcript on disk now. This
             // avoids redundant writes on the successful offline path while keeping
             // the summary/fallback steps' "read transcript.md" contract intact.
             if let pendingTranscriptWrite {
                 writeTranscript(pendingTranscriptWrite, in: directory)
-            } else if needsStreamingHeaderRewrite {
-                rewriteTranscriptHeader(finalHeader, in: directory)
             }
 
             // Only announce the summary stage when the splice will actually run a
@@ -333,11 +345,15 @@ actor TranscriptionService {
             // Streaming-diarizer fallback — only for normal stops when the offline
             // pass didn't run (no system audio, unavailable models, or timeout).
             // App quit keeps clip extraction off, so it skips this path too.
-            if extractSpeakers, !offlinePassRan,
-               let transcript = try? String(
-                   contentsOf: directory.appendingPathComponent("transcript.md"), encoding: .utf8
-               ) {
-                pendingSpeakerCount = extractUnnamedSystemSpeakers(in: directory, transcript: transcript)
+            // Anchored on the exact per-fragment entries, NOT the on-disk render:
+            // rendered blocks are turn-merged, so re-parsing the file would leave
+            // one timestamp per block and `segmentsCovering`'s ±1.5s tolerance
+            // would drop most of a speaker's diarizer segments.
+            if extractSpeakers, !offlinePassRan {
+                pendingSpeakerCount = extractUnnamedSystemSpeakers(
+                    in: directory,
+                    transcriptEntries: finalTranscriptEntries
+                )
             }
             if !keepAudioFiles {
                 // Must run after high-accuracy ASR, the offline pass, summary splice, and
@@ -375,7 +391,8 @@ actor TranscriptionService {
         transcriptEntries: [TranscriptEntry],
         extractSpeakerClips: Bool,
         timeout: Duration?,
-        requirePreparedModels: Bool
+        requirePreparedModels: Bool,
+        mergeBoundary: TimeInterval?
     ) async -> Int? {
         let systemURL = directory.appendingPathComponent("system.wav")
         guard FileManager.default.fileExists(atPath: systemURL.path) else { return nil }
@@ -417,7 +434,11 @@ actor TranscriptionService {
         // source-based rather than coupled to a particular display-name set.
         let reattribution = SpeakerReattribution.reattributeEntries(transcriptEntries, speakers: identified)
         let reattributedEntries = reattribution.entries
-        let reattributedTranscript = renderEntries(header: header, entries: reattributedEntries)
+        let reattributedTranscript = renderEntries(
+            header: header,
+            entries: reattributedEntries,
+            mergeBoundary: mergeBoundary
+        )
         guard writeTranscript(reattributedTranscript, in: directory) else { return nil }
 
         guard extractSpeakerClips else { return 0 }
@@ -654,7 +675,13 @@ actor TranscriptionService {
     /// clips to the app-support pending area and a `speakers.json` sidecar to the session
     /// folder. Returns the number of speakers written. Called from `endSession` while
     /// `system.wav` and the diarizer timeline are both still available.
-    private func extractUnnamedSystemSpeakers(in directory: URL, transcript: String) -> Int {
+    /// `transcriptEntries` are the exact per-fragment entries behind the final render —
+    /// their sub-second timestamps anchor `segmentsCovering`, and they carry the same
+    /// labels and echo filtering as the file (dropped echo lines are in neither).
+    private func extractUnnamedSystemSpeakers(
+        in directory: URL,
+        transcriptEntries: [TranscriptEntry]
+    ) -> Int {
         guard let systemState = sideStates[.system],
               let diarizer = systemState.diarizer else { return 0 }
 
@@ -663,8 +690,6 @@ actor TranscriptionService {
               let sampleRate = SpeakerClipExtractor.sampleRate(of: systemURL),
               sampleRate > 0 else { return 0 }
 
-        // Parse the finalized transcript once and bucket entries by their rendered label.
-        let entriesByLabel = Dictionary(grouping: SpeakerClipExtractor.parseEntries(transcript), by: \.label)
         let sessionFolder = directory.lastPathComponent
         var detected: [DetectedSpeaker] = []
 
@@ -673,10 +698,13 @@ actor TranscriptionService {
             guard speaker.name == nil else { continue }
             guard Double(speaker.speechDuration) >= SpeakerClipExtractor.minSpeechSeconds else { continue }
             // Use the rendered label string (assignment-order "Person N"), not the index.
-            // Require the label to actually appear in the transcript (lines dropped as echo
-            // never reach disk, so the speaker is genuinely present).
-            guard let label = systemState.speakerLabels[speaker.index],
-                  let labelEntries = entriesByLabel[label], !labelEntries.isEmpty else { continue }
+            // Require the label to actually appear in the final entries (lines dropped as
+            // echo are absent from them, so the speaker is genuinely present).
+            guard let label = systemState.speakerLabels[speaker.index] else { continue }
+            let labelEntries = SpeakerClipExtractor.survivingSystemEntries(
+                for: label, in: transcriptEntries
+            )
+            guard !labelEntries.isEmpty else { continue }
 
             // Restrict the clip to segments around lines that survived the echo filter, so a
             // phantom system speaker (the local user's voice echoed onto the system channel)
@@ -901,13 +929,13 @@ actor TranscriptionService {
         await asr?.reset()
 
         if !trimmed.isEmpty {
-            let midpoint = midpointTime(
-                lastEndSamples: previousEndSamples,
+            enqueueUtteranceEntry(
+                trimmed,
+                source: source,
+                previousEndSamples: previousEndSamples,
                 currentSamples: currentSamples,
                 sampleRate: sampleRate
             )
-            let speaker = currentSpeaker(for: source, at: midpoint)
-            enqueueRewrittenEntry(source: source, speaker: speaker, text: trimmed, timestamp: midpoint)
         }
     }
 
@@ -924,20 +952,47 @@ actor TranscriptionService {
         sampleRate = state.sampleRate
         state.lastUtteranceEndSamples = currentSamples
 
+        enqueueUtteranceEntry(
+            trimmed,
+            source: source,
+            previousEndSamples: previousEndSamples,
+            currentSamples: currentSamples,
+            sampleRate: sampleRate
+        )
+    }
+
+    /// Shared tail of both EOU handlers: attribute the utterance at its window
+    /// midpoint and enqueue the punctuation rewrite. One home for the
+    /// timestamp/end derivation so the live path and the stop-drain path can't
+    /// drift apart.
+    private func enqueueUtteranceEntry(
+        _ text: String,
+        source: AudioSide,
+        previousEndSamples: Int,
+        currentSamples: Int,
+        sampleRate: Double
+    ) {
         let midpoint = midpointTime(
             lastEndSamples: previousEndSamples,
             currentSamples: currentSamples,
             sampleRate: sampleRate
         )
         let speaker = currentSpeaker(for: source, at: midpoint)
-        enqueueRewrittenEntry(source: source, speaker: speaker, text: trimmed, timestamp: midpoint)
+        enqueueRewrittenEntry(
+            source: source,
+            speaker: speaker,
+            text: text,
+            timestamp: midpoint,
+            end: windowEnd(currentSamples: currentSamples, sampleRate: sampleRate)
+        )
     }
 
     private func enqueueRewrittenEntry(
         source: AudioSide,
         speaker: String,
         text: String,
-        timestamp: TimeInterval
+        timestamp: TimeInterval,
+        end: TimeInterval
     ) {
         guard let sessionID = activeSessionID else { return }
         let rewriter = rewriter
@@ -951,7 +1006,7 @@ actor TranscriptionService {
             // tearing down and we don't want to race the splice or final
             // render. The drain has already accounted for our slot.
             if Task.isCancelled { return }
-            let entry = TranscriptEntry(source: source, speaker: speaker, text: restored, timestamp: timestamp)
+            let entry = TranscriptEntry(source: source, speaker: speaker, text: restored, timestamp: timestamp, end: end)
             await self?.appendRewrittenEntry(entry, sessionID: sessionID)
             await self?.rewriteTaskFinished(sessionID: sessionID)
         }
@@ -1159,14 +1214,14 @@ actor TranscriptionService {
     /// Build a high-accuracy render if it covers every source the streaming
     /// transcript captured. The caller owns writing it so the offline identity pass
     /// can replace labels from the returned exact entries before summaries are made.
-    private func highAccuracyTranscript(header: String) async -> RenderedTranscript? {
+    private func highAccuracyTranscript(header: String, mergeBoundary: TimeInterval?) async -> RenderedTranscript? {
         guard let sessionDirectory else { return nil }
 
         do {
             let entries = try await highAccuracyTranscriptEntries(sessionDirectory: sessionDirectory)
             guard !entries.isEmpty else { return nil }
 
-            let rendered = renderTranscript(header: header, entries: entries)
+            let rendered = renderTranscript(header: header, entries: entries, mergeBoundary: mergeBoundary)
             guard rendered.entryCount > 0, rendered.text != header else { return nil }
             guard shouldReplaceStreamingTranscript(with: rendered) else {
                 NSLog("[SerialNotes/Transcription] keeping streaming transcript because final pass missed a recorded source")
@@ -1230,12 +1285,17 @@ actor TranscriptionService {
                 source: source,
                 speaker: currentSpeaker(for: source, at: segment.midpoint),
                 text: segment.text,
-                timestamp: segment.start
+                timestamp: segment.start,
+                end: segment.end
             )
         }
     }
 
-    private func renderTranscript(header: String, entries: [TranscriptEntry]) -> RenderedTranscript {
+    private func renderTranscript(
+        header: String,
+        entries: [TranscriptEntry],
+        mergeBoundary: TimeInterval?
+    ) -> RenderedTranscript {
         // The final pass holds every entry, so we can use dominance-aware
         // cross-channel echo removal instead of the streaming path's incremental,
         // one-directional heuristic — this also catches system-side echo of the
@@ -1262,7 +1322,7 @@ actor TranscriptionService {
         )
 
         return RenderedTranscript(
-            text: renderEntries(header: header, entries: kept),
+            text: renderEntries(header: header, entries: kept, mergeBoundary: mergeBoundary),
             entryCount: kept.count,
             sources: Set(kept.map(\.source)),
             entries: kept
@@ -1272,9 +1332,18 @@ actor TranscriptionService {
     /// Render an already-filtered/attributed set of exact entries without applying
     /// echo filtering again. Used after offline re-attribution, which must preserve
     /// the final render's source membership while only changing system labels.
-    private func renderEntries(header: String, entries: [TranscriptEntry]) -> String {
+    /// Consecutive same-speaker entries merge into one block here — presentation
+    /// only; callers keep the exact per-fragment entries for downstream timing work.
+    /// `mergeBoundary` (the auto-stop summary cutoff) is a timestamp merging never
+    /// crosses, so the whole-block cutoff filter in `summaryInput` keeps its
+    /// per-fragment precision.
+    private func renderEntries(
+        header: String,
+        entries: [TranscriptEntry],
+        mergeBoundary: TimeInterval?
+    ) -> String {
         var transcript = header
-        for entry in entries.sorted() {
+        for entry in TranscriptTurnMerger.mergedTurns(entries.sorted(), boundary: mergeBoundary) {
             transcript += TranscriptFormatter.entry(
                 speaker: entry.speaker,
                 timestamp: entry.timestamp,
@@ -1297,17 +1366,6 @@ actor TranscriptionService {
         } catch {
             onError?(error)
             return false
-        }
-    }
-
-    private func rewriteTranscriptHeader(_ header: String, in directory: URL) {
-        do {
-            let handle = try FileHandle(forWritingTo: directory.appendingPathComponent("transcript.md"))
-            defer { try? handle.close() }
-            try handle.seek(toOffset: 0)
-            handle.write(Data(header.utf8))
-        } catch {
-            onError?(error)
         }
     }
 
@@ -1424,6 +1482,14 @@ actor TranscriptionService {
         guard sampleRate > 0 else { return 0 }
         let midSample = (lastEndSamples + currentSamples) / 2
         return TimeInterval(midSample) / sampleRate
+    }
+
+    private nonisolated func windowEnd(
+        currentSamples: Int,
+        sampleRate: Double
+    ) -> TimeInterval {
+        guard sampleRate > 0 else { return 0 }
+        return TimeInterval(currentSamples) / sampleRate
     }
 
 }

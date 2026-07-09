@@ -8,6 +8,30 @@ struct TranscriptEntry: Comparable, Sendable {
     let speaker: String
     let text: String
     let timestamp: TimeInterval
+    /// When the utterance's audio ends. Lets `TranscriptTurnMerger` measure true
+    /// silence between consecutive entries instead of start-to-start distance.
+    /// Defaults to `timestamp` when the producer has no end timing, which makes
+    /// gap measurements overestimate — merging then errs toward keeping blocks
+    /// separate. Only the final-pass segmenter supplies exact speech times;
+    /// streaming entries stamp `timestamp` at the EOU-window *midpoint*, so
+    /// their measured gaps are approximate (roughly half of silence + speech) —
+    /// tolerable on the rare paths that render streaming entries, and the
+    /// summary-cutoff boundary is enforced separately in `mergedTurns`.
+    let end: TimeInterval
+
+    init(
+        source: AudioSide,
+        speaker: String,
+        text: String,
+        timestamp: TimeInterval,
+        end: TimeInterval? = nil
+    ) {
+        self.source = source
+        self.speaker = speaker
+        self.text = text
+        self.timestamp = timestamp
+        self.end = max(end ?? timestamp, timestamp)
+    }
 
     static func < (lhs: Self, rhs: Self) -> Bool {
         if lhs.timestamp == rhs.timestamp {
@@ -176,7 +200,8 @@ enum CrossChannelEchoFilter {
                 source: entry.source,
                 speaker: primaryName,
                 text: entry.text,
-                timestamp: entry.timestamp
+                timestamp: entry.timestamp,
+                end: entry.end
             )
         }
     }

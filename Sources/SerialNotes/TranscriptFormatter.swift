@@ -5,8 +5,9 @@ enum TranscriptFormatter {
     private static let paragraphCharacterLimit = 420
     private static let paragraphSentenceLimit = 3
 
-    /// Produces a fixed-width header so it can be rewritten in place at end-of-session
-    /// via `seek(toOffset: 0)`. Duration is always formatted `HHhMMmSSs`.
+    /// The placeholder header written at session start (duration 0) is replaced when
+    /// `endSession` regenerates the whole transcript and writes it atomically.
+    /// Duration is always formatted `HHhMMmSSs`.
     static func header(date: Date, duration: TimeInterval) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"

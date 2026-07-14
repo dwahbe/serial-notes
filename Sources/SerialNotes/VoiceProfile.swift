@@ -5,6 +5,8 @@ import Foundation
 /// Profiles are stored as a pair of files in the profile directory:
 /// - `<id>.json` — name + kind
 /// - `<id>.wav`  — enrollment clip (mono float32)
+/// A matched profile may also carry a derived `<id>.embedding` cache
+/// (see `VoiceEmbedding`) — not part of the profile identity.
 struct VoiceProfile: Identifiable, Codable, Hashable {
     enum Kind: String, Codable {
         /// The user's own voice — used to prime the mic-side diarizer.

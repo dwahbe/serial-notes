@@ -35,9 +35,10 @@ enum StreamingCoverage: Equatable, Sendable {
 /// case the operation keeps running detached (its work must be safe to outlive
 /// the wait; see callers). First-resume-wins by design: a task group is NOT
 /// usable here because the group would join a child that is itself blocked
-/// awaiting a non-cancellable `Task.value`, defeating the timeout. This is the
-/// ONE audited resume-once race in the codebase — extend it rather than
-/// hand-rolling another continuation gate.
+/// awaiting a non-cancellable `Task.value`, defeating the timeout. This is one
+/// of two audited resume-once gates in the codebase (the other is
+/// `RecordingState.awaitAttachOrQuitBegins`, which races an external event
+/// rather than a timeout) — extend one of them rather than hand-rolling another.
 func awaitOrTimeout<T: Sendable>(_ timeout: Duration, _ operation: @escaping @Sendable () async -> T) async -> T? {
     await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
         let resumed = OSAllocatedUnfairLock(initialState: false)

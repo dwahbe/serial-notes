@@ -7,7 +7,7 @@ import Foundation
 /// Two callers depend on the same process-object plumbing and must not drift:
 ///   · `MeetingAudioActivityMonitor` — call-*end* monitoring of the one app a
 ///     recording is associated with.
-///   · `MeetingDetectionService` — start-time attribution: which *known* meeting
+///   · `MeetingInputCaptureMonitor` — start-time attribution: which *known* meeting
 ///     app is actually capturing the mic right now.
 ///
 /// Both go through this enum so there is a single source of truth for the

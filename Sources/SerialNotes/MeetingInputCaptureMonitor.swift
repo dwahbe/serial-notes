@@ -27,7 +27,7 @@ final class MeetingInputCaptureMonitor {
 
     /// Safety-net poll cadence — bounds worst-case latency when a per-process
     /// `IsRunningInput` notification is dropped. Short enough to keep start-prompt
-    /// latency within a couple of seconds (see plan), cheap enough at idle.
+    /// latency within a couple of seconds, cheap enough at idle.
     private let pollInterval: Duration = .seconds(1.5)
 
     func start() {

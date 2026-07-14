@@ -21,7 +21,7 @@ Requires **macOS 26+ (Tahoe)** on **Apple Silicon** — see [Requirements](#requ
 
 ## How it works
 
-When a meeting app starts using your mic — Zoom, Meet, Teams, FaceTime, Slack, Webex, or Discord — a small banner offers to record. One click and Serial Notes captures both sides of the call: system audio through a CoreAudio process tap (no screen-recording prompt; ScreenCaptureKit as a fallback), and your mic through AVAudioEngine.
+When a meeting app starts using your mic — Zoom, Teams, FaceTime, Slack, Webex, or Discord — a small banner offers to record. (Browser calls like Google Meet don't auto-detect; just start recording from the menu bar.) One click and Serial Notes captures both sides of the call: system audio through a CoreAudio process tap (no screen-recording prompt; ScreenCaptureKit as a fallback), and your mic through AVAudioEngine.
 
 Transcription happens live on your Mac with [FluidAudio](https://github.com/FluidInference/FluidAudio) — Parakeet for streaming speech-to-text, LS-EEND to tell speakers apart. If Apple Intelligence is on, Apple's on-device Foundation Models restore punctuation and capitalization as each line arrives. There's also a small Markdown notepad you can open during the call; whatever you write is autosaved and included in the final document, though it never feeds the generated summary.
 

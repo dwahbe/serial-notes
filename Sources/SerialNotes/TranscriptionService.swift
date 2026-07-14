@@ -250,8 +250,8 @@ actor TranscriptionService: TranscriptionSessionManaging {
         let handle = try FileHandle(forWritingTo: transcriptURL)
         transcriptHandle = handle
 
-        // Write placeholder header with duration=0. Rewritten on endSession
-        // with final duration — header byte-length is fixed, so seek+write works.
+        // Write placeholder header with duration=0. endSession replaces it with the
+        // final duration when it regenerates the whole transcript and writes it atomically.
         let header = TranscriptFormatter.header(date: sessionStart, duration: 0)
         handle.write(Data(header.utf8))
 

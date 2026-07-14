@@ -2,7 +2,7 @@ name: Release
 
 # Push a version tag (e.g. v0.2.0) to cut a release. This builds, Developer-ID
 # signs, notarizes, and staples the app, publishes a GitHub Release with the
-# zip, then signs the update for Sparkle and commits the regenerated appcast to
+# DMG, then signs the update for Sparkle and commits the regenerated appcast to
 # main — so installed users get prompted to update.
 #
 # `scripts/release.sh X.Y.Z` is the convenience trigger (it just tags + pushes).

@@ -139,7 +139,7 @@ final class MeetingDetectionService {
     @ObservationIgnored private var pendingNamingPrompts: [NamingPrompt] = []
     @ObservationIgnored private var activeNamingPrompt: NamingPrompt?
 
-    // MARK: Call-end monitoring (unchanged)
+    // MARK: Call-end monitoring
     @ObservationIgnored private let audioActivityMonitor = MeetingAudioActivityMonitor()
     @ObservationIgnored private var callEndState = CallEndStateMachine()
     @ObservationIgnored private var callEndGraceTask: Task<Void, Never>?

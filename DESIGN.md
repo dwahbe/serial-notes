@@ -97,8 +97,8 @@ _macOS app design below; the marketing site (`site/`) is documented at the end._
 
 ## System Panels
 
-- Use `NSOpenPanel` / `NSSavePanel` for file operations
-- Set `.regular` activation policy before presenting, restore `.accessory` after
+- Use `NSOpenPanel` for file operations
+- Surface panels the menu-bar way — `NSApp.activate()` + `orderFrontRegardless()`; the app stays `.accessory` for its whole lifetime, never flipping to `.regular` (see CLAUDE.md → App shell → Activation policy)
 
 ---
 

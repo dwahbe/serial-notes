@@ -232,6 +232,7 @@ struct SerialNotesApp: App {
                 .environment(identitySettings)
                 .environment(exportSettings)
                 .environment(manualNotesSettings)
+                .environment(manualNotesWindowController)
                 .environment(meetingDetectionService)
                 .environment(meetingSessionsStore)
                 .environment(settingsNavigation)

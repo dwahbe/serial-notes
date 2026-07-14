@@ -1,5 +1,6 @@
 import AppKit
 import FoundationModels
+import KeyboardShortcuts
 import SwiftUI
 
 struct SettingsView: View {
@@ -399,10 +400,20 @@ private struct GeneralSettingsTab: View {
     @Environment(SummarySettings.self) private var summarySettings
     @Environment(MeetingSettings.self) private var meetingSettings
     @Environment(ManualNotesSettings.self) private var manualNotesSettings
+    @Environment(ManualNotesWindowController.self) private var manualNotesWindow
     @Environment(ExportSettings.self) private var exportSettings
     @Environment(UpdaterController.self) private var updater
     @Environment(RecordingState.self) private var recordingState
     @Environment(SettingsNavigation.self) private var navigation
+
+    /// Mentions the toggle combo only while one is actually set — the recorder's
+    /// clear button removes the shortcut entirely.
+    private var notepadFooter: String {
+        let base = "Notepad contents are saved locally during recording and added to "
+            + "transcript.md before summary and action items. They don't affect generated summaries."
+        guard let combo = manualNotesWindow.shortcutDisplay else { return base }
+        return "While recording, \(combo) shows or hides the notepad from any app. " + base
+    }
 
     private var foundationModelsAvailable: Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
@@ -481,10 +492,13 @@ private struct GeneralSettingsTab: View {
 
             Section {
                 Toggle("Open notepad when recording starts", isOn: $manualNotes.openNotepadWhenRecordingStarts)
+                KeyboardShortcuts.Recorder("Show or hide notepad", name: .toggleNotepad) { _ in
+                    manualNotesWindow.shortcutDidChange()
+                }
             } header: {
                 Text("Notepad")
             } footer: {
-                Text("While recording, \(ManualNotesWindowController.toggleShortcut.display) shows or hides the notepad from any app. Notepad contents are saved locally during recording and added to transcript.md before summary and action items. They don't affect generated summaries.")
+                Text(notepadFooter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

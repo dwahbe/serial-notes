@@ -297,10 +297,13 @@ struct MenuBarView: View {
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .trailing) {
                     // Global toggle hint — the combo works from any app while
-                    // recording, not just with the popover open.
-                    Text(ManualNotesWindowController.toggleShortcut.display)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    // recording, not just with the popover open. Hidden when
+                    // the user cleared the shortcut in Settings.
+                    if let combo = manualNotesWindow.shortcutDisplay {
+                        Text(combo)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
         }
         .controlSize(.large)

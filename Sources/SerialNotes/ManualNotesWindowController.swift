@@ -1,5 +1,18 @@
 import AppKit
+import KeyboardShortcuts
 import SwiftUI
+
+extension KeyboardShortcuts.Name {
+    /// The system-wide notepad toggle, user-configurable in Settings → General.
+    /// Default ⌃⌘N: no stock app binds it, and the system's own chords there
+    /// (⌃⌘Space, ⌃⌘Q, ⌃⌘F) keep app menus away from bare ⌃⌘ combos. UI hints
+    /// must read the live combo via `ManualNotesWindowController.shortcutDisplay`,
+    /// never hardcode it.
+    static let toggleNotepad = Self(
+        "toggleNotepad",
+        initial: .init(.n, modifiers: [.control, .command])
+    )
+}
 
 /// Owns the manual-notes notepad window. It is a custom `NSPanel` (not a SwiftUI
 /// `Window` scene) for the same reason `MeetingBannerController` is: the notepad
@@ -14,17 +27,22 @@ final class ManualNotesWindowController {
     @ObservationIgnored var notesStore: ManualNotesStore?
 
     @ObservationIgnored private var panel: NSPanel?
-    @ObservationIgnored private var toggleHotKey: GlobalHotKey?
+    /// The toggle handler is bound to the shortcut name once, on the first
+    /// activation — binding a listener is what makes KeyboardShortcuts claim
+    /// the combo, so deferring it keeps a never-recorded launch clean.
+    @ObservationIgnored private var keyListenerInstalled = false
 
     /// True while the recording-scoped global shortcut is claimed. Intent flag,
-    /// deliberately independent of Carbon registration success — a failed
+    /// deliberately independent of hot-key registration success — a failed
     /// registration degrades to the in-app buttons, and tests assert on this
     /// without touching system hot-key state.
     private(set) var isGlobalShortcutActive = false
 
-    /// The system-wide notepad toggle; UI hints render `.display` from here so
-    /// they can't drift from the registered combo.
-    static let toggleShortcut = GlobalHotKey.KeyCombo.controlCommandN
+    /// The current combo as macOS renders it ("⌃⌘N"), for the popover button
+    /// hint and the Settings footer; `nil` when the user cleared the shortcut.
+    /// Stored (not computed) so @Observable views refresh when it changes.
+    private(set) var shortcutDisplay: String? =
+        KeyboardShortcuts.getShortcut(for: .toggleNotepad)?.description
 
     private static let defaultSize = NSSize(width: 520, height: 460)
     /// Internal so the SwiftUI content view sizes from the same source of truth.
@@ -40,24 +58,38 @@ final class ManualNotesWindowController {
         }
     }
 
-    /// Claim ⌃⌘N system-wide. RecordingState activates this when the notepad
-    /// binds to a session and deactivates it at the stop press, so outside a
-    /// recording the combo passes through to other apps untouched.
+    /// Claim the toggle combo system-wide. RecordingState activates this when
+    /// the notepad binds to a session and deactivates it at the stop press, so
+    /// outside a recording the combo passes through to other apps untouched.
     func activateGlobalShortcut() {
         guard !isGlobalShortcutActive else { return }
         isGlobalShortcutActive = true
-        let hotKey = toggleHotKey ?? GlobalHotKey(combo: Self.toggleShortcut) { [weak self] in
-            self?.toggle()
+        if !keyListenerInstalled {
+            keyListenerInstalled = true
+            KeyboardShortcuts.onKeyDown(for: .toggleNotepad) { [weak self] in
+                self?.toggle()
+            }
         }
-        toggleHotKey = hotKey
-        hotKey.register()
+        KeyboardShortcuts.enable(.toggleNotepad)
     }
 
     /// Release the combo back to other apps. Idempotent.
     func deactivateGlobalShortcut() {
         guard isGlobalShortcutActive else { return }
         isGlobalShortcutActive = false
-        toggleHotKey?.unregister()
+        KeyboardShortcuts.disable(.toggleNotepad)
+    }
+
+    /// Called by the Settings recorder's `onChange` — the only path the combo
+    /// changes. (The package's change notification is internal, so the recorder
+    /// callback is the supported observation point.)
+    func shortcutDidChange() {
+        shortcutDisplay = KeyboardShortcuts.getShortcut(for: .toggleNotepad)?.description
+        // A combo recorded while idle must not go live before the next
+        // recording claims it.
+        if !isGlobalShortcutActive {
+            KeyboardShortcuts.disable(.toggleNotepad)
+        }
     }
 
     func present() {

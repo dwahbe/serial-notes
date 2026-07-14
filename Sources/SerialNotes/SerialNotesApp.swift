@@ -55,7 +55,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let recordingState, recordingState.hasActiveOrFinalizingSession else {
+        // Gate on the widest lifecycle flag: a session that is still spinning up
+        // (isStarting) or capturing ahead of its transcription attach has work
+        // to drain just like an active or finalizing one.
+        guard let recordingState, recordingState.isRecordingSessionActive else {
             return .terminateNow
         }
 
@@ -130,6 +133,13 @@ struct SerialNotesApp: App {
             guard let recording, let storage else { return }
             Task { await recording.start(storageDirectory: storage.storageLocation) }
         }
+        // The floating banner must not offer Record while ASR models are still
+        // downloading — same gate the popover applies. (A pre-models recording
+        // would capture fine, but its attach could park quit behind an
+        // unbounded model download.)
+        detector.isReadyToRecord = { [weak modelState] in
+            modelState?.isReady ?? false
+        }
         detector.onStopRecordingRequested = { [weak recording] reason in
             recording?.stop(reason: reason)
         }
@@ -163,7 +173,7 @@ struct SerialNotesApp: App {
         // this launch is probably about to defer to it, and the survivor owns
         // the (shared-cache) download. The delegate re-kicks it if this launch
         // wins its conflict instead.
-        let kickoffModelDownload = {
+        let kickoffModelDownload = { [weak detector] in
             Task { @MainActor in
                 // The offline identity models are distinct from the streaming ASR
                 // bundle. Warm both at launch so Stop never becomes their first
@@ -171,6 +181,10 @@ struct SerialNotesApp: App {
                 async let streamingModels: Void = modelState.downloadIfNeeded()
                 async let offlineModels: Void = recording.prepareOfflineIdentityModels()
                 _ = await (streamingModels, offlineModels)
+                // Meeting detection is gated on model readiness — wake it now
+                // that recording is possible (nothing else re-evaluates at this
+                // moment, and a call may already be underway).
+                detector?.modelReadinessChanged()
             }
         }
         if SingleInstanceGuard.anotherInstanceIsRunning() {

@@ -484,7 +484,7 @@ private struct GeneralSettingsTab: View {
             } header: {
                 Text("Notepad")
             } footer: {
-                Text("Notepad contents are saved locally during recording and added to transcript.md before summary and action items. They don't affect generated summaries.")
+                Text("While recording, \(ManualNotesWindowController.toggleShortcut.display) shows or hides the notepad from any app. Notepad contents are saved locally during recording and added to transcript.md before summary and action items. They don't affect generated summaries.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -537,12 +537,14 @@ private struct GeneralSettingsTab: View {
                 }
                 Button("Show Setup Guide…", action: showSetupGuide)
                     // The guide drives audio permissions + voice enrollment, which
-                    // conflict with a live capture — block re-entry while recording.
-                    .disabled(recordingState.hasActiveOrFinalizingSession)
+                    // conflict with a live capture — block re-entry across the
+                    // whole session lifecycle (a start in flight already owns the
+                    // mic, same as an active or finalizing recording).
+                    .disabled(recordingState.isRecordingSessionActive)
             } header: {
                 Text("About")
             } footer: {
-                if recordingState.hasActiveOrFinalizingSession {
+                if recordingState.isRecordingSessionActive {
                     Text("The setup guide is available after the current recording finishes saving.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

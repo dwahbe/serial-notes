@@ -4,10 +4,13 @@ enum RecordingStopReason: Equatable, Sendable {
     case manual
     case callEndedAuto(MeetingCallEndContext)
     case appQuit
+    /// The capture engine died mid-recording (stream error, file-write failure).
+    /// The session is stopped and finalized with whatever audio was captured.
+    case captureFailed
 
     var summaryCutoffDate: Date? {
         switch self {
-        case .manual, .appQuit:
+        case .manual, .appQuit, .captureFailed:
             return nil
         case .callEndedAuto(let context):
             return context.inactiveAt
@@ -27,6 +30,8 @@ enum RecordingStopReason: Equatable, Sendable {
             return "callEndedAuto"
         case .appQuit:
             return "appQuit"
+        case .captureFailed:
+            return "captureFailed"
         }
     }
 }

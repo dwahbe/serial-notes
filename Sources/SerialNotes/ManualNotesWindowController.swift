@@ -14,10 +14,51 @@ final class ManualNotesWindowController {
     @ObservationIgnored var notesStore: ManualNotesStore?
 
     @ObservationIgnored private var panel: NSPanel?
+    @ObservationIgnored private var toggleHotKey: GlobalHotKey?
+
+    /// True while the recording-scoped global shortcut is claimed. Intent flag,
+    /// deliberately independent of Carbon registration success — a failed
+    /// registration degrades to the in-app buttons, and tests assert on this
+    /// without touching system hot-key state.
+    private(set) var isGlobalShortcutActive = false
+
+    /// The system-wide notepad toggle; UI hints render `.display` from here so
+    /// they can't drift from the registered combo.
+    static let toggleShortcut = GlobalHotKey.KeyCombo.controlCommandN
 
     private static let defaultSize = NSSize(width: 520, height: 460)
     /// Internal so the SwiftUI content view sizes from the same source of truth.
     static let minSize = NSSize(width: 360, height: 280)
+
+    var isNotepadVisible: Bool { panel?.isVisible == true }
+
+    func toggle() {
+        if isNotepadVisible {
+            dismiss()
+        } else {
+            present()
+        }
+    }
+
+    /// Claim ⌃⌘N system-wide. RecordingState activates this when the notepad
+    /// binds to a session and deactivates it at the stop press, so outside a
+    /// recording the combo passes through to other apps untouched.
+    func activateGlobalShortcut() {
+        guard !isGlobalShortcutActive else { return }
+        isGlobalShortcutActive = true
+        let hotKey = toggleHotKey ?? GlobalHotKey(combo: Self.toggleShortcut) { [weak self] in
+            self?.toggle()
+        }
+        toggleHotKey = hotKey
+        hotKey.register()
+    }
+
+    /// Release the combo back to other apps. Idempotent.
+    func deactivateGlobalShortcut() {
+        guard isGlobalShortcutActive else { return }
+        isGlobalShortcutActive = false
+        toggleHotKey?.unregister()
+    }
 
     func present() {
         guard let notesStore else { return }

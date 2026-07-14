@@ -7,7 +7,38 @@ struct FinalizedSessionResult: Sendable {
     let manualNotesCommitted: Bool
 }
 
-actor TranscriptionService {
+/// The exact `TranscriptionService` surface `RecordingState` drives, as a seam
+/// for lifecycle tests. `TranscriptionService` is the production conformer.
+protocol TranscriptionSessionManaging: Actor {
+    func downloadModelsIfNeeded() async throws
+    func setCallbacks(onError: (@Sendable (Error) -> Void)?)
+    func startSession(
+        sessionDirectory: URL,
+        sessionStart: Date,
+        enrollments: [EnrollmentClip],
+        summarySettings: SummarySettings.Snapshot,
+        micPrimaryName: String
+    ) async throws
+    func endSession(
+        summarySettings: SummarySettings.Snapshot,
+        keepAudioFiles: Bool,
+        sessionEnd: Date?,
+        summaryCutoff: TimeInterval?,
+        streamingCoverage: [AudioSide: StreamingCoverage],
+        manualNotesMarkdown: String?,
+        extractSpeakers: Bool,
+        performOfflineIdentity: Bool,
+        speakerCandidates: [SpeakerIdentityMatcher.Candidate],
+        offlineIdentifier: OfflineSpeakerIdentifier?,
+        offlineIdentityTimeout: Duration?,
+        requirePreparedOfflineModels: Bool,
+        onPhase: (@Sendable (FinalizationPhase) -> Void)?
+    ) async -> FinalizedSessionResult
+    func processMicAudio(_ captured: CapturedAudioBuffer) async
+    func processSystemAudio(_ captured: CapturedAudioBuffer) async
+}
+
+actor TranscriptionService: TranscriptionSessionManaging {
     // MARK: - Callbacks (set by RecordingState)
 
     /// Called when a transcription error occurs. Delivered off-main; caller hops to main if needed.
@@ -68,6 +99,13 @@ actor TranscriptionService {
     private var streamingEntryCount = 0
     private var streamingEntrySources = Set<AudioSide>()
     private var lastFlushedTimestamp: TimeInterval = 0
+    /// How much of each side's captured audio actually reached the streaming
+    /// pipeline, reported by the session's `AudioFeedPipeline` at stop. Anything
+    /// past a side's coverage is absent from the streaming transcript *and* its
+    /// diarizer timeline, so the final render must neither fall back to the
+    /// streaming transcript as if complete nor attribute beyond coverage.
+    /// Set at `endSession` entry; empty (= assume complete) otherwise.
+    private var streamingCoverage: [AudioSide: StreamingCoverage] = [:]
     private static let flushDelaySeconds: TimeInterval = 3.0
     private static let echoSuppressionLookbackSeconds: TimeInterval = 30 * 60
     private static let maxEchoSuppressionSystemEntries = 64
@@ -86,6 +124,15 @@ actor TranscriptionService {
     private static let streamingErrorReportThreshold = 5
 
     private var modelsLoaded = false
+    /// Gate on the streaming ingest path: buffers are accepted only between
+    /// `startSession` and the *first statement* of `endSession`. This is what
+    /// makes a hard drain timeout safe — a straggler consumer's late send lands
+    /// here and is dropped instead of polluting the finalizing (or next)
+    /// session's per-side state.
+    private var acceptingStreamingAudio = false
+
+    /// Test hook for the ingest gate.
+    var isAcceptingStreamingAudio: Bool { acceptingStreamingAudio }
 
     // MARK: - Model Lifecycle
 
@@ -172,6 +219,7 @@ actor TranscriptionService {
         streamingEchoContext.reset()
         streamingEntryCount = 0
         streamingEntrySources = []
+        streamingCoverage = [:]
         lastFlushedTimestamp = 0
 
         // The EOU callbacks installed below dispatch into `handleUtterance`,
@@ -218,6 +266,11 @@ actor TranscriptionService {
             guard let self else { return }
             Task { await self.handleUtterance(text, source: .system) }
         }
+
+        // Open the ingest gate LAST: everything above can throw, and a session
+        // that failed to start must not leave the gate open (nothing may feed
+        // audio outside a successfully-started session).
+        acceptingStreamingAudio = true
     }
 
     /// Returns the number of unrecognized system-side speakers for which an
@@ -227,7 +280,9 @@ actor TranscriptionService {
     func endSession(
         summarySettings: SummarySettings.Snapshot = .disabled,
         keepAudioFiles: Bool = true,
+        sessionEnd: Date? = nil,
         summaryCutoff: TimeInterval? = nil,
+        streamingCoverage: [AudioSide: StreamingCoverage] = [:],
         manualNotesMarkdown: String? = nil,
         extractSpeakers: Bool = true,
         performOfflineIdentity: Bool = true,
@@ -237,6 +292,11 @@ actor TranscriptionService {
         requirePreparedOfflineModels: Bool = false,
         onPhase: (@Sendable (FinalizationPhase) -> Void)? = nil
     ) async -> FinalizedSessionResult {
+        // Close the ingest gate before anything else — from here on a straggler
+        // buffer (e.g. from a drain-timeout abandoned consumer) must be dropped,
+        // not fed into state that is being finalized.
+        acceptingStreamingAudio = false
+        self.streamingCoverage = streamingCoverage
         onPhase?(.finishingTranscript)
         for side in AudioSide.allCases {
             do {
@@ -256,21 +316,38 @@ actor TranscriptionService {
 
         flushAllEntries()
 
-        let duration = sessionStart.map { Date().timeIntervalSince($0) } ?? 0
+        // Finalization can run long after the recording actually stopped (a new
+        // recording may already be capturing), so the duration comes from the
+        // stop-press timestamp the caller snapshotted, not from "now".
+        let duration = sessionStart.map { (sessionEnd ?? Date()).timeIntervalSince($0) } ?? 0
         let finalHeader = TranscriptFormatter.header(date: sessionDate ?? sessionStart ?? Date(), duration: duration)
 
         onPhase?(.improvingTranscript)
-        let highAccuracyRender = await highAccuracyTranscript(
+        let highAccuracyResult = await highAccuracyTranscript(
             header: finalHeader,
             mergeBoundary: summaryCutoff
         )
 
+        // "Interrupted" is a session-level fact: content sourced from the
+        // streaming pipeline (a merged side on the high-accuracy path, or
+        // everything on the fallback path) is missing its tail. EVERY write
+        // path below — including the offline identity pass's re-render — must
+        // carry the note, or a truncated transcript ships looking complete.
+        let interruptionNote: String? = Self.interruptionNoteApplies(
+            mergedStreamingSides: highAccuracyResult?.mergedStreamingSides ?? [],
+            usedFallbackStreamingRender: highAccuracyResult == nil,
+            coverage: streamingCoverage
+        ) ? Self.truncatedTranscriptNote : nil
+        if interruptionNote != nil {
+            NSLog("[SerialNotes/Transcription] streaming coverage incomplete — transcript marked as interrupted")
+        }
+
         var pendingTranscriptWrite: String?
-        if let highAccuracyRender {
+        if let highAccuracyResult {
             try? transcriptHandle?.close()
             transcriptHandle = nil
-            finalTranscriptEntries = highAccuracyRender.entries
-            pendingTranscriptWrite = highAccuracyRender.text
+            finalTranscriptEntries = highAccuracyResult.render.entries
+            pendingTranscriptWrite = highAccuracyResult.render.text
         } else {
             // Final ASR unavailable — re-render the streaming entries instead of
             // keeping the raw per-EOU file with a patched header. The entry array
@@ -313,7 +390,8 @@ actor TranscriptionService {
                     extractSpeakerClips: extractSpeakers,
                     timeout: offlineIdentityTimeout,
                     requirePreparedModels: requirePreparedOfflineModels,
-                    mergeBoundary: summaryCutoff
+                    mergeBoundary: summaryCutoff,
+                    trailingNote: interruptionNote
                 ) {
                     pendingSpeakerCount = count
                     offlinePassRan = true
@@ -326,7 +404,7 @@ actor TranscriptionService {
             // avoids redundant writes on the successful offline path while keeping
             // the summary/fallback steps' "read transcript.md" contract intact.
             if let pendingTranscriptWrite {
-                writeTranscript(pendingTranscriptWrite, in: directory)
+                writeTranscript(pendingTranscriptWrite, in: directory, trailingNote: interruptionNote)
             }
 
             // Only announce the summary stage when the splice will actually run a
@@ -371,6 +449,11 @@ actor TranscriptionService {
         enrolledMicNames = []
         micPrimaryName = "You"
         finalTranscriptEntries = []
+        // A buffer that slipped past the gate before endSession closed it (it
+        // was suspended inside asr.process) can enqueue a late entry after the
+        // flush — clear it here so it can't linger between sessions.
+        pendingEntries = []
+        self.streamingCoverage = [:]
         return FinalizedSessionResult(
             pendingSpeakerCount: pendingSpeakerCount,
             manualNotesCommitted: manualNotesCommitted
@@ -392,7 +475,8 @@ actor TranscriptionService {
         extractSpeakerClips: Bool,
         timeout: Duration?,
         requirePreparedModels: Bool,
-        mergeBoundary: TimeInterval?
+        mergeBoundary: TimeInterval?,
+        trailingNote: String?
     ) async -> Int? {
         let systemURL = directory.appendingPathComponent("system.wav")
         guard FileManager.default.fileExists(atPath: systemURL.path) else { return nil }
@@ -439,7 +523,9 @@ actor TranscriptionService {
             entries: reattributedEntries,
             mergeBoundary: mergeBoundary
         )
-        guard writeTranscript(reattributedTranscript, in: directory) else { return nil }
+        // This write REPLACES the render endSession prepared — the note travels
+        // with it so a truncated transcript can't ship looking complete.
+        guard writeTranscript(reattributedTranscript, in: directory, trailingNote: trailingNote) else { return nil }
 
         guard extractSpeakerClips else { return 0 }
         return writeOfflineSidecar(
@@ -460,35 +546,14 @@ actor TranscriptionService {
         let work = Task.detached(priority: .utility) {
             try await identifier.identifySpeakers(inRecordingAt: systemURL, candidates: candidates)
         }
-        let outcome = await withCheckedContinuation { continuation in
-            let gate = OfflineIdentityRaceGate(continuation)
-            Task {
-                do {
-                    await gate.resume(.success(try await work.value))
-                } catch {
-                    await gate.resume(.failure(SendableError(error: error)))
-                }
-            }
-            Task {
-                do {
-                    try await Task.sleep(for: timeout)
-                    await gate.resume(.timedOut)
-                } catch {
-                    // The sleeper is intentionally best-effort; cancellation means
-                    // some other outcome already won or the process is terminating.
-                }
-            }
-        }
-
-        switch outcome {
-        case let .success(speakers):
-            return speakers
-        case let .failure(error):
-            throw error.error
-        case .timedOut:
+        // awaitOrTimeout because `work.value` cannot be interrupted by awaiting-
+        // side cancellation — the shared helper abandons the wait at the
+        // deadline (nil) while the detached work is cancelled cooperatively.
+        guard let outcome = await awaitOrTimeout(timeout, { await work.result }) else {
             work.cancel()
             return nil
         }
+        return try outcome.get()
     }
 
     /// Turn the offline pass's speakers into a `speakers.json` sidecar (+ clips for the
@@ -850,6 +915,9 @@ actor TranscriptionService {
     }
 
     private func processAudio(_ captured: CapturedAudioBuffer, source: AudioSide) async {
+        // Ingest gate first — see acceptingStreamingAudio. Buffers outside the
+        // startSession→endSession window must not touch per-side state.
+        guard acceptingStreamingAudio else { return }
         let state = sideState(for: source)
         guard let asr = state.asr else { return }
         let buffer = captured.buffer
@@ -1097,7 +1165,17 @@ actor TranscriptionService {
 
     // MARK: - Speaker Lookup
 
-    private func currentSpeaker(for source: AudioSide, at time: TimeInterval) -> String {
+    private func currentSpeaker(
+        for source: AudioSide,
+        at time: TimeInterval,
+        validThrough: TimeInterval? = nil
+    ) -> String {
+        // Beyond the streaming feed's coverage the diarizer timeline is blind —
+        // `speakerInfo`'s most-recently-ended fallback would pin the whole
+        // undrained tail on whoever happened to speak last. Use the side default.
+        if let validThrough, time > validThrough {
+            return labelForSpeaker(0, source: source)
+        }
         guard let diarizer = sideStates[source]?.diarizer else {
             return labelForSpeaker(0, source: source)
         }
@@ -1214,12 +1292,35 @@ actor TranscriptionService {
     /// Build a high-accuracy render if it covers every source the streaming
     /// transcript captured. The caller owns writing it so the offline identity pass
     /// can replace labels from the returned exact entries before summaries are made.
-    private func highAccuracyTranscript(header: String, mergeBoundary: TimeInterval?) async -> RenderedTranscript? {
+    /// The final rendered transcript plus which sides had to fall back to
+    /// streaming entries (final ASR produced nothing for them under incomplete
+    /// coverage) — those sides drive the interruption-note decision.
+    private struct HighAccuracyResult {
+        let render: RenderedTranscript
+        let mergedStreamingSides: Set<AudioSide>
+    }
+
+    private func highAccuracyTranscript(header: String, mergeBoundary: TimeInterval?) async -> HighAccuracyResult? {
         guard let sessionDirectory else { return nil }
 
         do {
-            let entries = try await highAccuracyTranscriptEntries(sessionDirectory: sessionDirectory)
+            var entries = try await highAccuracyTranscriptEntries(sessionDirectory: sessionDirectory)
             guard !entries.isEmpty else { return nil }
+
+            // Under incomplete coverage the "keep streaming wholesale" fallback
+            // below is off the table (a partial stream must never stand as the
+            // complete transcript), so a source the final pass missed would
+            // vanish outright — merge that source's streaming entries instead.
+            // renderTranscript sorts, so merged entries interleave correctly.
+            var mergedSides: Set<AudioSide> = []
+            if Self.hasIncompleteCoverage(streamingCoverage) {
+                let finalSources = Set(entries.map(\.source))
+                mergedSides = streamingEntrySources.subtracting(finalSources)
+                if !mergedSides.isEmpty {
+                    entries += finalTranscriptEntries.filter { mergedSides.contains($0.source) }
+                    NSLog("[SerialNotes/Transcription] final ASR missed %d source(s) under partial coverage — merged their streaming entries", mergedSides.count)
+                }
+            }
 
             let rendered = renderTranscript(header: header, entries: entries, mergeBoundary: mergeBoundary)
             guard rendered.entryCount > 0, rendered.text != header else { return nil }
@@ -1227,7 +1328,7 @@ actor TranscriptionService {
                 NSLog("[SerialNotes/Transcription] keeping streaming transcript because final pass missed a recorded source")
                 return nil
             }
-            return rendered
+            return HighAccuracyResult(render: rendered, mergedStreamingSides: mergedSides)
         } catch {
             NSLog("[SerialNotes/Transcription] high-accuracy final transcript skipped: \(error.localizedDescription)")
             return nil
@@ -1280,10 +1381,11 @@ actor TranscriptionService {
     }
 
     private func finalEntries(from result: ASRResult, source: AudioSide) -> [TranscriptEntry] {
-        FinalTranscriptSegmenter.segments(from: result).map { segment in
+        let validThrough = streamingCoverage[source]?.validThroughSeconds
+        return FinalTranscriptSegmenter.segments(from: result).map { segment in
             return TranscriptEntry(
                 source: source,
-                speaker: currentSpeaker(for: source, at: segment.midpoint),
+                speaker: currentSpeaker(for: source, at: segment.midpoint, validThrough: validThrough),
                 text: segment.text,
                 timestamp: segment.start,
                 end: segment.end
@@ -1353,11 +1455,19 @@ actor TranscriptionService {
         return transcript
     }
 
+    /// The transcript writer owns the trailing interruption note: every path
+    /// that puts a final render on disk passes the session's note through here,
+    /// so no future write site can silently ship a truncated transcript marked
+    /// complete by forgetting a manual append.
     @discardableResult
-    private func writeTranscript(_ text: String, in directory: URL?) -> Bool {
+    private func writeTranscript(_ text: String, in directory: URL?, trailingNote: String? = nil) -> Bool {
         guard let directory else { return false }
+        var output = text
+        if let trailingNote {
+            output += trailingNote
+        }
         do {
-            try text.write(
+            try output.write(
                 to: directory.appendingPathComponent("transcript.md"),
                 atomically: true,
                 encoding: .utf8
@@ -1369,9 +1479,58 @@ actor TranscriptionService {
         }
     }
 
+    /// Marker appended to a transcript whose streaming feed was cut short and
+    /// that the high-accuracy pass couldn't regenerate from the WAVs.
+    static let truncatedTranscriptNote =
+        "\n*Transcription was interrupted — the end of this recording is missing from the transcript.*\n"
+
     private func shouldReplaceStreamingTranscript(with rendered: RenderedTranscript) -> Bool {
+        Self.shouldReplaceStreamingTranscript(
+            streamingEntryCount: streamingEntryCount,
+            streamingSources: streamingEntrySources,
+            renderedEntryCount: rendered.entryCount,
+            renderedSources: rendered.sources,
+            coverage: streamingCoverage
+        )
+    }
+
+    /// Pure decision behind the final-render swap, extracted for unit tests.
+    static func shouldReplaceStreamingTranscript(
+        streamingEntryCount: Int,
+        streamingSources: Set<AudioSide>,
+        renderedEntryCount: Int,
+        renderedSources: Set<AudioSide>,
+        coverage: [AudioSide: StreamingCoverage]
+    ) -> Bool {
         guard streamingEntryCount > 0 else { return true }
-        return streamingEntrySources.isSubset(of: rendered.sources)
+        // An incomplete streaming feed must never masquerade as the complete
+        // transcript: the final pass reads the full WAVs (plus merged streaming
+        // entries for any source it missed), so prefer it whenever it produced
+        // anything.
+        if hasIncompleteCoverage(coverage) {
+            return renderedEntryCount > 0
+        }
+        return streamingSources.isSubset(of: renderedSources)
+    }
+
+    /// True when any side's streaming feed was cut short.
+    static func hasIncompleteCoverage(_ coverage: [AudioSide: StreamingCoverage]) -> Bool {
+        coverage.values.contains { !$0.isComplete }
+    }
+
+    /// Whether the written transcript must carry the interruption note: some of
+    /// its content came from the streaming pipeline — a merged side on the
+    /// high-accuracy path, or everything on the fallback path — *and* that
+    /// content's feed was cut short. Pure — unit-tested.
+    static func interruptionNoteApplies(
+        mergedStreamingSides: Set<AudioSide>,
+        usedFallbackStreamingRender: Bool,
+        coverage: [AudioSide: StreamingCoverage]
+    ) -> Bool {
+        if usedFallbackStreamingRender {
+            return hasIncompleteCoverage(coverage)
+        }
+        return mergedStreamingSides.contains { !(coverage[$0]?.isComplete ?? true) }
     }
 
     private func shouldWriteEntry(_ entry: TranscriptEntry) -> Bool {
@@ -1548,31 +1707,6 @@ private struct RenderedTranscript {
     let entryCount: Int
     let sources: Set<AudioSide>
     let entries: [TranscriptEntry]
-}
-
-private struct SendableError: @unchecked Sendable {
-    let error: any Error
-}
-
-private enum OfflineIdentityRaceOutcome: Sendable {
-    case success([IdentifiedSpeaker])
-    case failure(SendableError)
-    case timedOut
-}
-
-private actor OfflineIdentityRaceGate {
-    private var didResume = false
-    private let continuation: CheckedContinuation<OfflineIdentityRaceOutcome, Never>
-
-    init(_ continuation: CheckedContinuation<OfflineIdentityRaceOutcome, Never>) {
-        self.continuation = continuation
-    }
-
-    func resume(_ outcome: OfflineIdentityRaceOutcome) {
-        guard !didResume else { return }
-        didResume = true
-        continuation.resume(returning: outcome)
-    }
 }
 
 private extension Duration {

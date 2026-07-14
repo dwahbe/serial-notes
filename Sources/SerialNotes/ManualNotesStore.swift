@@ -1,13 +1,27 @@
 import Foundation
 
+/// A finalizing session's captured notes: the text handed to the transcript
+/// splice plus the sidecar that backs it until the splice is confirmed. A value
+/// token held by that session's finalization — NOT store state — so a new
+/// recording can `beginSession` immediately while the previous session's splice
+/// is still in flight, without either clobbering the other.
+struct ManualNotesSnapshot: Sendable {
+    let text: String
+    let sidecarURL: URL
+}
+
 @MainActor @Observable
 final class ManualNotesStore {
     nonisolated static let sidecarFileName = ".manual-notes.md"
 
-    /// Path of a sidecar whose transcript splice failed, stashed so the next
-    /// launch can surface the notes instead of stranding them in a hidden file —
-    /// the quit path has no UI left to show the failure on.
+    /// Legacy single-path pointer key — migrated into `recoveryPathsKey` on read.
     static let recoveryPathKey = "manualNotes.recoverySidecarPath"
+    /// Paths of sidecars whose transcript splice failed, stashed so later
+    /// launches can surface the notes instead of stranding them in hidden files —
+    /// the quit path has no UI left to show the failure on. A LIST because
+    /// overlapping recordings mean more than one splice can fail per run; each
+    /// launch restores one draft and keeps the rest for the next.
+    static let recoveryPathsKey = "manualNotes.recoverySidecarPaths"
 
     /// How long to wait after the last keystroke before autosaving. Keeps the
     /// disk off the typing hot path — the in-memory `text` is always current and
@@ -19,8 +33,15 @@ final class ManualNotesStore {
     private(set) var isEditable = false
     var errorMessage: String?
 
+    /// Injectable so tests get isolated recovery-pointer state (the pointers
+    /// are the store's only cross-launch global); production uses `.standard`.
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.defaults = userDefaults
+    }
+
     @ObservationIgnored private var sidecarURL: URL?
-    @ObservationIgnored private var pendingCleanupURL: URL?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     /// Tail of the ordered sidecar disk-op chain. Every write/delete awaits its
     /// predecessor, so a slow in-flight autosave can never land after a later
@@ -30,17 +51,21 @@ final class ManualNotesStore {
     func beginSession(sessionDir: URL) {
         flushTask?.cancel()
         let previousSidecarURL = sidecarURL
+        let carriedText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         sidecarURL = Self.sidecarURL(in: sessionDir)
-        pendingCleanupURL = nil
         isEditable = true
         errorMessage = nil
-        Self.clearRecoveryPointer()
+        // A carried-forward draft consumes ITS OWN recovery pointer (the text
+        // lives on in the new session) — never another session's pending one.
+        if carriedText, let previousSidecarURL {
+            removeRecoveryPointer(previousSidecarURL)
+        }
 
-        // A kept draft (failed start, failed splice, quit recovery) is never
-        // silently wiped — it carries into the new session, its sidecar moves
-        // with it, and the superseded copy is reaped. An empty draft costs no
-        // disk at all: the first keystroke's debounced flush creates the file.
-        if let sidecarURL, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // A kept draft (failed splice, quit recovery) is never silently wiped —
+        // it carries into the new session, its sidecar moves with it, and the
+        // superseded copy is reaped. An empty draft costs no disk at all: the
+        // first keystroke's debounced flush creates the file.
+        if let sidecarURL, carriedText {
             enqueueWrite(text, to: sidecarURL)
         }
         if let previousSidecarURL, previousSidecarURL != sidecarURL {
@@ -81,105 +106,100 @@ final class ManualNotesStore {
         }
     }
 
-    /// Captures the draft for finalization. The returned in-memory text is the
-    /// source of truth handed to `endSession`; the final sidecar write is
-    /// enqueued behind any in-flight autosave so the on-disk crash copy is
-    /// current by the time `completeSnapshotWrite` can need it.
-    func snapshotAndEndSession() -> String? {
+    /// Captures the draft for finalization and frees the active-draft slot —
+    /// the returned token travels with that session's finalization, so a new
+    /// `beginSession` can run immediately (back-to-back recordings) without
+    /// touching the captured notes. The snapshot text is the source of truth
+    /// handed to `endSession`; the final sidecar write is enqueued behind any
+    /// in-flight autosave so the on-disk crash copy is current by the time
+    /// `completeSnapshotWrite` can need it. Returns nil for an empty draft.
+    func snapshotAndEndSession() -> ManualNotesSnapshot? {
         flushTask?.cancel()
-        isEditable = false
-        pendingCleanupURL = sidecarURL
+        let capturedURL = sidecarURL
+        let capturedText = text
         sidecarURL = nil
+        resetInactiveDraft()
 
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            deletePendingSidecar()
-            resetInactiveDraft()
+        guard let capturedURL else { return nil }
+        guard !capturedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            enqueueDelete(capturedURL)
             return nil
         }
-        if let url = pendingCleanupURL {
-            enqueueWrite(text, to: url)
-        }
-        return text
+        enqueueWrite(capturedText, to: capturedURL)
+        return ManualNotesSnapshot(text: capturedText, sidecarURL: capturedURL)
     }
 
-    func completeSnapshotWrite(succeeded: Bool) async {
+    /// Returns the user-facing failure message when the splice failed (nil on
+    /// success) so the caller can surface it in the right place. The store sets
+    /// its OWN notepad `errorMessage` only when it re-activates the failed draft
+    /// — a live successor's open notepad must never show a predecessor's failure
+    /// as its own.
+    @discardableResult
+    func completeSnapshotWrite(_ snapshot: ManualNotesSnapshot, succeeded: Bool) async -> String? {
         if succeeded {
-            deletePendingSidecar()
-            Self.clearRecoveryPointer()
-            resetInactiveDraft()
-            return
+            enqueueDelete(snapshot.sidecarURL)
+            removeRecoveryPointer(snapshot.sidecarURL)
+            return nil
         }
-        guard let url = pendingCleanupURL,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         // The notes never made it into transcript.md. Don't fail silently, and
-        // don't claim the sidecar is safe until a fresh write of the in-memory
+        // don't claim the sidecar is safe until a fresh write of the snapshot
         // text confirms it — the earlier flush may have failed for the same
         // disk problem the splice did.
-        let outcome = await enqueueWrite(text, to: url).value
+        let outcome = await enqueueWrite(snapshot.text, to: snapshot.sidecarURL).value
         let message: String
         switch outcome {
         case .success:
-            Self.setRecoveryPointer(url)
-            message = "Couldn't add your notes to transcript.md — they're saved at \(url.path)"
+            setRecoveryPointer(snapshot.sidecarURL)
+            message = "Couldn't add your notes to transcript.md — they're saved at \(snapshot.sidecarURL.path)"
         case .failure:
             message = "Couldn't add your notes to transcript.md or save them to disk — copy them from this notepad."
         }
-        errorMessage = message
         NSLog("[SerialNotes/ManualNotes] %@", message)
-        // Keep the draft live so it can be copied, edited, or carried into the
-        // next session instead of locking text that only exists here.
-        sidecarURL = url
-        pendingCleanupURL = nil
-        isEditable = true
-    }
-
-    func discardIfEmptyAfterStartFailure() {
-        flushTask?.cancel()
-        guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // Recording never started, but the user has typed text — keep it
-            // editable (and autosaving); the next beginSession carries it
-            // forward. Persist now since we just cancelled the debounced write.
-            if let sidecarURL {
-                enqueueWrite(text, to: sidecarURL)
-            }
-            return
+        // Re-activate the failed notes so they can be copied, edited, or carried
+        // into the next session — but only when no newer draft owns the editor;
+        // a live recording's notes must never be clobbered by a predecessor's
+        // failure (the sidecar + recovery pointer keep the text safe instead).
+        if !isEditable, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            text = snapshot.text
+            sidecarURL = snapshot.sidecarURL
+            isEditable = true
+            errorMessage = message
         }
-        pendingCleanupURL = sidecarURL
-        sidecarURL = nil
-        deletePendingSidecar()
-        resetInactiveDraft()
+        return message
     }
 
-    /// Surfaces notes whose splice failed during an app quit. Reads the pointer
-    /// stashed by `completeSnapshotWrite` back at launch; returns true when a
-    /// draft was restored so the caller can present the notepad. One blocking
-    /// read at launch, only ever after a rare failed-splice quit.
+    /// Surfaces notes whose splice failed, from the pointers stashed by
+    /// `completeSnapshotWrite`. Restores ONE draft per launch (the oldest valid
+    /// one) and keeps the rest for subsequent launches — drafts from different
+    /// meetings must not merge into one notepad. Stale/empty entries are pruned
+    /// as they're encountered. Returns true when a draft was restored so the
+    /// caller can present the notepad. Blocking reads at launch only, and only
+    /// ever after a rare failed splice.
     func restoreQuitRecoveryDraft() -> Bool {
-        guard !isEditable, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let path = UserDefaults.standard.string(forKey: Self.recoveryPathKey) else {
+        guard !isEditable, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
-        Self.clearRecoveryPointer()
-        let url = URL(fileURLWithPath: path)
-        guard let saved = try? String(contentsOf: url, encoding: .utf8),
-              !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
+        var paths = recoveryPointers()
+        while !paths.isEmpty {
+            let path = paths.removeFirst()
+            let url = URL(fileURLWithPath: path)
+            guard let saved = try? String(contentsOf: url, encoding: .utf8),
+                  !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue  // stale entry — prune and try the next
+            }
+            storeRecoveryPointers(paths)
+            text = saved
+            sidecarURL = url
+            isEditable = true
+            errorMessage = "These notes couldn't be added to their meeting's transcript.md — recovered from \(url.path)"
+            return true
         }
-        text = saved
-        sidecarURL = url
-        isEditable = true
-        errorMessage = "These notes couldn't be added to their meeting's transcript.md — recovered from \(url.path)"
-        return true
+        storeRecoveryPointers([])
+        return false
     }
 
     nonisolated static func sidecarURL(in sessionDir: URL) -> URL {
         sessionDir.appendingPathComponent(sidecarFileName)
-    }
-
-    private func deletePendingSidecar() {
-        guard let url = pendingCleanupURL else { return }
-        enqueueDelete(url)
-        pendingCleanupURL = nil
     }
 
     private func resetInactiveDraft() {
@@ -187,12 +207,38 @@ final class ManualNotesStore {
         isEditable = false
     }
 
-    private static func setRecoveryPointer(_ url: URL) {
-        UserDefaults.standard.set(url.path, forKey: recoveryPathKey)
+    /// Current pointer list, migrating any legacy single-path entry in place.
+    private func recoveryPointers() -> [String] {
+        var paths = defaults.stringArray(forKey: Self.recoveryPathsKey) ?? []
+        if let legacy = defaults.string(forKey: Self.recoveryPathKey) {
+            defaults.removeObject(forKey: Self.recoveryPathKey)
+            if !paths.contains(legacy) {
+                paths.append(legacy)
+            }
+            storeRecoveryPointers(paths)
+        }
+        return paths
     }
 
-    private static func clearRecoveryPointer() {
-        UserDefaults.standard.removeObject(forKey: recoveryPathKey)
+    private func storeRecoveryPointers(_ paths: [String]) {
+        if paths.isEmpty {
+            defaults.removeObject(forKey: Self.recoveryPathsKey)
+        } else {
+            defaults.set(paths, forKey: Self.recoveryPathsKey)
+        }
+    }
+
+    private func setRecoveryPointer(_ url: URL) {
+        var paths = recoveryPointers()
+        guard !paths.contains(url.path) else { return }
+        paths.append(url.path)
+        storeRecoveryPointers(paths)
+    }
+
+    private func removeRecoveryPointer(_ url: URL) {
+        var paths = recoveryPointers()
+        paths.removeAll { $0 == url.path }
+        storeRecoveryPointers(paths)
     }
 
     // MARK: - Ordered sidecar disk chain (all I/O off the main actor)

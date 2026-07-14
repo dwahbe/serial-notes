@@ -131,4 +131,24 @@ struct MeetingStartDetectorTests {
         #expect(detector.debounceTimerFired(bundleID: zoom).isEmpty)
         #expect(detector.debounceTimerFired(bundleID: slack) == [.showPrompt(bundleID: slack)])
     }
+
+    @Test("releaseLock clears the lock without suppressing the capture episode")
+    func releaseLockClearsLockOnly() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)
+        #expect(detector.lockedBundleID == zoom)
+
+        // Recording stopped → the lock is released so a follow-up recording
+        // can't inherit this (now ended) call's association.
+        detector.releaseLock()
+        #expect(detector.lockedBundleID == nil)
+
+        // The episode was NOT suppressed: once Zoom stops capturing and starts
+        // a genuinely new call, it prompts again.
+        feed(&detector, [])
+        #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
 }

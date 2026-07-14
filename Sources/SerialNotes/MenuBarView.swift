@@ -106,18 +106,20 @@ struct MenuBarView: View {
                     }
                     .controlSize(.large)
                     .buttonStyle(.glassProminent)
+                    .disabled(recordingState.isStarting)
                 }
             }
         } else {
             Button(action: {
                 Task { await recordingState.start(storageDirectory: storageSettings.storageLocation) }
             }) {
-                Label("Start Recording", systemImage: "record.circle")
+                Label(recordingState.isStarting ? "Starting…" : "Start Recording",
+                      systemImage: "record.circle")
                     .frame(maxWidth: .infinity)
             }
             .controlSize(.large)
             .buttonStyle(.glassProminent)
-            .disabled(!modelDownloadState.isReady)
+            .disabled(!modelDownloadState.isReady || recordingState.isStarting)
         }
 
         if let error = recordingState.errorMessage {
@@ -138,9 +140,15 @@ struct MenuBarView: View {
     /// expose no incremental progress — so the label carries the real signal.
     private var processingCard: some View {
         let phase = recordingState.finalizationPhase ?? .finishingTranscript
+        // Back-to-back stops queue their finalizations — say where we are in
+        // the queue instead of looking stuck on one endless bar.
+        let batchSize = recordingState.finalizationBatchSize
+        let title = batchSize > 1
+            ? "Processing meeting \(min(recordingState.finalizationBatchCompleted + 1, batchSize)) of \(batchSize)"
+            : "Processing meeting"
 
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Processing meeting")
+            Text(title)
                 .font(.caption)
             ProgressView(value: phase.fractionComplete)
                 .controlSize(.small)
@@ -276,9 +284,24 @@ struct MenuBarView: View {
         // (and the parent `body`) stays stable.
         ElapsedTimeText(recordingState: recordingState)
 
+        // A recording can start while the previous meeting is still processing —
+        // its card shows here. (Audio is captured in full from the first moment;
+        // the live transcript quietly fills in once the previous meeting's
+        // processing releases the transcription engine.)
+        if recordingState.isFinalizing {
+            processingCard
+        }
+
         Button(action: { manualNotesWindow.present() }) {
             Label("Open Notes", systemImage: "note.text")
                 .frame(maxWidth: .infinity)
+                .overlay(alignment: .trailing) {
+                    // Global toggle hint — the combo works from any app while
+                    // recording, not just with the popover open.
+                    Text(ManualNotesWindowController.toggleShortcut.display)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
         }
         .controlSize(.large)
         .buttonStyle(.glass)

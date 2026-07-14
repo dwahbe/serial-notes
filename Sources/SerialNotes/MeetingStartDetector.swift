@@ -119,6 +119,18 @@ struct MeetingStartDetector: Sendable {
         suppressCurrentEpisode()
     }
 
+    /// Forget the app the current lock is bound to, without suppressing its
+    /// episode. Called when a recording stops: back-to-back recordings keep the
+    /// input monitor down continuously, so the fresh-detector re-baseline that
+    /// used to clear the lock implicitly never happens — and a surviving lock
+    /// would bind the *next* recording's call-end monitoring to the previous,
+    /// already-ended call, auto-stopping it spuriously. The lock's only consumer
+    /// is call-end association at recording start, so clearing at stop is
+    /// behavior-preserving for every other flow.
+    mutating func releaseLock() {
+        lockedBundleID = nil
+    }
+
     private mutating func suppressCurrentEpisode() -> [Effect] {
         var effects: [Effect] = []
         if let locked = lockedBundleID {

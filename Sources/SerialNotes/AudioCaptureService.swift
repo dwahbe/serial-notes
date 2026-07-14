@@ -26,27 +26,209 @@ struct AudioCaptureStats: Codable, Sendable {
 
 struct CapturedAudioBuffer: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
+
+    /// Payload size in bytes. The feed pipeline's backlog accounting adds and
+    /// subtracts this same value, so both sides must share one definition.
+    var byteCount: Int {
+        Int(buffer.frameLength) * MemoryLayout<Float>.size * Int(buffer.format.channelCount)
+    }
 }
 
-final class AudioCaptureService: NSObject, @unchecked Sendable {
+/// Seam over the capture engine, so lifecycle tests can drive `RecordingState`
+/// with a scripted capture. `AudioCaptureService` is the production conformer.
+protocol AudioCapturing: Sendable {
+    func startCapture(sessionDir: URL, callbacks: AudioCaptureCallbacks) async throws
+    func stopCapture() async
+    func currentStats() -> AudioCaptureStats
+}
+
+/// Per-session delivery targets for capture output. Captured **by value** at
+/// `startCapture` (via the per-capture `CaptureContext`) — never read from
+/// mutable service state at delivery time. A straggler callback from a previous
+/// capture can therefore only reach its own session's (already finished) feed,
+/// never the next session's.
+struct AudioCaptureCallbacks: Sendable {
+    let onSystemAudioBuffer: @Sendable (CapturedAudioBuffer) -> Void
+    let onMicAudioBuffer: @Sendable (CapturedAudioBuffer) -> Void
+    let onError: @Sendable (Error) -> Void
+}
+
+/// Per-capture home of every delivery-time sink — the WAV file handles, the
+/// stream stats, and the session's callbacks. The IOProc block, the mic tap,
+/// and the SCK relay each hold their capture's context by value, so a straggler
+/// delivery from a stopped capture can only ever write into its own (already
+/// closed) files and its own stats — never a successor's. `AudioCaptureService`
+/// keeps only engine/tap lifetime state.
+final class CaptureContext: @unchecked Sendable {
+    enum Sink { case system, mic }
+
+    let callbacks: AudioCaptureCallbacks
+    private let lock = NSLock()
+    private var systemAudioFile: AVAudioFile?
+    private var micAudioFile: AVAudioFile?
+    /// Session dir for the SCK path's lazily-created system.wav (see
+    /// `ensureSystemFileForSCK`).
+    private var sckSystemFileDir: URL?
+    private let statsLock = OSAllocatedUnfairLock(initialState: AudioCaptureStats())
+
+    init(callbacks: AudioCaptureCallbacks) {
+        self.callbacks = callbacks
+    }
+
+    func setSystemFile(_ file: AVAudioFile) {
+        lock.withLock { systemAudioFile = file }
+    }
+
+    func setMicFile(_ file: AVAudioFile) {
+        lock.withLock { micAudioFile = file }
+    }
+
+    func setSCKSystemFileDir(_ dir: URL) {
+        lock.withLock { sckSystemFileDir = dir }
+    }
+
+    /// Close the file handles. Stats stay readable (the service snapshots them
+    /// for post-session diagnostics); further writes silently no-op.
+    func closeFiles() {
+        lock.withLock {
+            systemAudioFile = nil
+            micAudioFile = nil
+            sckSystemFileDir = nil
+        }
+    }
+
+    func write(_ buffer: AVAudioPCMBuffer, to sink: Sink) {
+        lock.withLock {
+            let file = sink == .system ? systemAudioFile : micAudioFile
+            guard let file else { return }
+            do {
+                try file.write(from: buffer)
+            } catch {
+                callbacks.onError(error)
+            }
+        }
+    }
+
+    var stats: AudioCaptureStats {
+        statsLock.withLock { $0 }
+    }
+
+    func setPath(_ path: AudioCapturePath) {
+        statsLock.withLock { $0.path = path }
+    }
+
+    func setMicVoiceProcessing(_ enabled: Bool) {
+        statsLock.withLock { $0.mic.voiceProcessingEnabled = enabled }
+    }
+
+    @discardableResult
+    func recordStats(frames: Int, rate: Double, sink: Sink) -> Bool {
+        statsLock.withLock {
+            let wasFirst: Bool
+            switch sink {
+            case .system:
+                wasFirst = $0.system.bufferCount == 0
+                $0.system.bufferCount += 1
+                $0.system.sampleCount += frames
+                $0.system.sampleRate = rate
+            case .mic:
+                wasFirst = $0.mic.bufferCount == 0
+                $0.mic.bufferCount += 1
+                $0.mic.sampleCount += frames
+                $0.mic.sampleRate = rate
+            }
+            return wasFirst
+        }
+    }
+
+    /// Convert CMSampleBuffer to AVAudioPCMBuffer, write it, and deliver it
+    /// (SCK fallback only).
+    func writeSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        to sink: Sink,
+        callback: @Sendable (CapturedAudioBuffer) -> Void
+    ) {
+        guard let formatDescription = sampleBuffer.formatDescription,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
+              let format = AVAudioFormat(streamDescription: asbd),
+              let blockBuffer = sampleBuffer.dataBuffer else {
+            return
+        }
+
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0,
+              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            return
+        }
+
+        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
+
+        var dataLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &dataLength, dataPointerOut: &dataPointer)
+        guard status == kCMBlockBufferNoErr, let dataPointer else { return }
+
+        // Ensure we have float channel data (SCK should always deliver float32)
+        guard let destPtr = pcmBuffer.floatChannelData?[0] else { return }
+
+        let bytesToCopy = min(dataLength, Int(pcmBuffer.frameLength) * Int(format.streamDescription.pointee.mBytesPerFrame))
+        memcpy(destPtr, dataPointer, bytesToCopy)
+
+        // System audio (SCK path) creates system.wav lazily so the file header
+        // is stamped with the rate actually delivered, not the requested 48 kHz.
+        if sink == .system {
+            ensureSystemFileForSCK(matching: format)
+        }
+        write(pcmBuffer, to: sink)
+
+        callback(CapturedAudioBuffer(buffer: pcmBuffer))
+    }
+
+    /// Lazily create the SCK path's `system.wav` using the rate SCK *actually*
+    /// delivers. The `SCStreamConfiguration` only requests a rate; SCK can
+    /// resample to something else (notably 24 kHz on Bluetooth/HFP "call mode"),
+    /// and stamping the header with the delivered rate keeps playback duration
+    /// honest so the diarizer + ASR second pass aren't time-warped. Channels
+    /// stay mono — only the rate is taken from the buffer.
+    private func ensureSystemFileForSCK(matching deliveredFormat: AVAudioFormat) {
+        lock.withLock {
+            guard systemAudioFile == nil, let dir = sckSystemFileDir else { return }
+            let writeFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: deliveredFormat.sampleRate,
+                channels: 1,
+                interleaved: false
+            ) ?? deliveredFormat
+            do {
+                systemAudioFile = try AVAudioFile(
+                    forWriting: dir.appendingPathComponent("system.wav"),
+                    settings: writeFormat.settings
+                )
+                NSLog("[SerialNotes/Capture] SCK system.wav created at delivered rate \(deliveredFormat.sampleRate)")
+            } catch {
+                callbacks.onError(error)
+            }
+        }
+    }
+}
+
+final class AudioCaptureService: NSObject, AudioCapturing, @unchecked Sendable {
     private var tapInfo = SystemAudioTapInfo(tapID: 0, aggregateDeviceID: 0)
     private var systemIOProcID: AudioDeviceIOProcID?
     private var micEngine: AVAudioEngine?
-    private var systemAudioFile: AVAudioFile?
-    private var micAudioFile: AVAudioFile?
-    private let lock = NSLock()
-    private let statsLock = OSAllocatedUnfairLock(initialState: AudioCaptureStats())
 
     // Fallback for when process tap is unavailable
     private var stream: SCStream?
-    /// Session dir for the SCK path's lazily-created system.wav (see
-    /// `ensureSystemFileForSCK`). Set when SCK starts, cleared on stop.
-    private var sckSystemFileDir: URL?
+    /// Per-capture SCK output/delegate relay — holds this session's context by
+    /// value (SCStream's delegate is weak, so the service keeps the relay alive).
+    private var sckRelay: SCKStreamRelay?
 
-    private var onError: (@Sendable (Error) -> Void)?
-
-    var onSystemAudioBuffer: (@Sendable (CapturedAudioBuffer) -> Void)?
-    var onMicAudioBuffer: (@Sendable (CapturedAudioBuffer) -> Void)?
+    /// The in-flight capture's sinks; nil between captures. All delivery paths
+    /// hold this by value — the service never routes a buffer itself.
+    private var activeContext: CaptureContext?
+    /// Stats of the most recently *finished* capture, so `currentStats()` keeps
+    /// answering after `stopCapture` (session.json is written post-teardown).
+    private var lastStats = AudioCaptureStats()
 
     private static let sampleRate: Double = 48000
     private static let channelCount: AVAudioChannelCount = 1
@@ -54,14 +236,14 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
     // Capture diagnostics — read after stopCapture() to write session.json.
     /// Snapshot of stats since the last startCapture() call.
     func currentStats() -> AudioCaptureStats {
-        statsLock.withLock { $0 }
+        activeContext?.stats ?? lastStats
     }
 
     // MARK: - Public API
 
-    func startCapture(sessionDir: URL, onError: @escaping @Sendable (Error) -> Void) async throws {
-        self.onError = onError
-        statsLock.withLock { $0 = AudioCaptureStats() }
+    func startCapture(sessionDir: URL, callbacks: AudioCaptureCallbacks) async throws {
+        let context = CaptureContext(callbacks: callbacks)
+        activeContext = context
 
         // Request mic permission upfront — accessing AVAudioEngine.inputNode
         // without permission can crash.
@@ -69,16 +251,21 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
         if IsSystemAudioTapAvailable() {
             do {
-                try startWithProcessTap(sessionDir: sessionDir, micGranted: micGranted)
-                statsLock.withLock { $0.path = .processTap }
+                try startWithProcessTap(sessionDir: sessionDir, micGranted: micGranted, context: context)
+                context.setPath(.processTap)
                 return
             } catch {
-                // Process tap failed — clean up partial state, fall through to SCK
+                // Process tap failed — clean up partial state, fall through to SCK.
+                // The context's file handles must be closed too: a system.wav the
+                // tap path already created carries the TAP's sample rate, and if
+                // it survived, ensureSystemFileForSCK would no-op and SCK audio
+                // would be written into a wrong-rate (or format-mismatched) file.
                 cleanupEngines()
+                context.closeFiles()
             }
         }
-        try await startWithScreenCaptureKit(sessionDir: sessionDir, micGranted: micGranted)
-        statsLock.withLock { $0.path = .screenCaptureKit }
+        try await startWithScreenCaptureKit(sessionDir: sessionDir, micGranted: micGranted, context: context)
+        context.setPath(.screenCaptureKit)
     }
 
     func stopCapture() async {
@@ -89,19 +276,17 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
             self.stream = nil
         }
 
-        lock.withLock {
-            systemAudioFile = nil
-            micAudioFile = nil
-            sckSystemFileDir = nil
+        if let context = activeContext {
+            lastStats = context.stats
+            context.closeFiles()
+            activeContext = nil
         }
-        onError = nil
-        onSystemAudioBuffer = nil
-        onMicAudioBuffer = nil
+        sckRelay = nil
     }
 
     // MARK: - Process Tap (Primary — triggers "System Audio Recording Only")
 
-    private func startWithProcessTap(sessionDir: URL, micGranted: Bool) throws {
+    private func startWithProcessTap(sessionDir: URL, micGranted: Bool, context: CaptureContext) throws {
         let info = CreateSystemAudioTap()
         guard info.tapID != 0, info.aggregateDeviceID != 0 else {
             NSLog("[SerialNotes/Capture] processTap path: tap creation returned zero IDs — falling back")
@@ -120,8 +305,8 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         // failure must tear it all down before the throw propagates. The SCK
         // path mirrors this pattern.
         do {
-            try startSystemAudioIOProc(sessionDir: sessionDir, aggDeviceID: info.aggregateDeviceID)
-            try startMicrophoneEngine(sessionDir: sessionDir, micGranted: micGranted)
+            try startSystemAudioIOProc(sessionDir: sessionDir, aggDeviceID: info.aggregateDeviceID, context: context)
+            try startMicrophoneEngine(sessionDir: sessionDir, micGranted: micGranted, context: context)
         } catch {
             cleanupEngines()
             throw error
@@ -130,7 +315,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
     // MARK: - System Audio IOProc (raw HAL — bypasses AVAudioEngine)
 
-    private func startSystemAudioIOProc(sessionDir: URL, aggDeviceID: AudioDeviceID) throws {
+    private func startSystemAudioIOProc(sessionDir: URL, aggDeviceID: AudioDeviceID, context: CaptureContext) throws {
         // Query the aggregate's input stream format so we know the rate the
         // tap is delivering at. The format is determined by the tap + clock
         // sub-device.
@@ -173,7 +358,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
             forWriting: sessionDir.appendingPathComponent("system.wav"),
             settings: writeFormat.settings
         )
-        lock.withLock { systemAudioFile = systemFile }
+        context.setSystemFile(systemFile)
 
         // Per-cycle conversion buffer — sized for max expected frames.
         // The HAL block fires with whatever the device's IO block size is
@@ -182,13 +367,17 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
         let ioQueue = DispatchQueue(label: "com.serialnotes.system-ioproc", qos: .userInteractive)
 
+        // The block captures only its capture's context — it never touches the
+        // (shared, single-instance) service, so a straggler invocation across a
+        // stop/start boundary cannot reach a successor's files or stats.
+        let onSystemAudioBuffer = context.callbacks.onSystemAudioBuffer
+
         var procID: AudioDeviceIOProcID?
         let createStatus = AudioDeviceCreateIOProcIDWithBlock(
             &procID,
             aggDeviceID,
             ioQueue
-        ) { [weak self] (_, inputData, _, _, _) in
-            guard let self else { return }
+        ) { (_, inputData, _, _, _) in
             let abl = inputData.pointee
             guard abl.mNumberBuffers > 0 else { return }
             let firstBuffer = withUnsafePointer(to: inputData.pointee.mBuffers) { $0.pointee }
@@ -223,14 +412,12 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
                 dest.update(from: src, count: writeFrames)
             }
 
-            let isFirst = recordStats(frames: writeFrames, rate: sourceSampleRate, side: .system)
+            let isFirst = context.recordStats(frames: writeFrames, rate: sourceSampleRate, sink: .system)
             if isFirst {
                 NSLog("[SerialNotes/Capture] system IOProc FIRST buffer frames=\(writeFrames) sr=\(sourceSampleRate)")
             }
-            writeBuffer(pcm, for: \.systemAudioFile)
-            if let callback = onSystemAudioBuffer {
-                callback(CapturedAudioBuffer(buffer: pcm))
-            }
+            context.write(pcm, to: .system)
+            onSystemAudioBuffer(CapturedAudioBuffer(buffer: pcm))
         }
         guard createStatus == noErr, let procID else {
             NSLog("[SerialNotes/Capture] AudioDeviceCreateIOProcIDWithBlock failed status=\(createStatus)")
@@ -250,20 +437,16 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
     // MARK: - ScreenCaptureKit Fallback
 
-    private func startWithScreenCaptureKit(sessionDir: URL, micGranted: Bool) async throws {
+    private func startWithScreenCaptureKit(sessionDir: URL, micGranted: Bool, context: CaptureContext) async throws {
         let content = try await SCShareableContent.current
         guard let display = content.displays.first else {
             throw AudioCaptureError.noDisplayFound
         }
 
         // system.wav is created lazily on the first delivered sample buffer
-        // (ensureSystemFileForSCK) so its header is stamped with the rate SCK
-        // *actually* delivers. The config below only *requests* Self.sampleRate;
-        // SCK can deliver something else — notably 24 kHz on Bluetooth/HFP "call
-        // mode" — and a hardcoded 48 kHz header would write system.wav at the
-        // wrong speed (pitched up) and time-warp the diarizer + ASR input. This
-        // mirrors the process-tap path trusting the nominal (delivered) rate.
-        lock.withLock { sckSystemFileDir = sessionDir }
+        // (CaptureContext.ensureSystemFileForSCK) so its header is stamped with
+        // the rate SCK *actually* delivers.
+        context.setSCKSystemFileDir(sessionDir)
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
@@ -277,28 +460,34 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
         let outputQueue = DispatchQueue(label: "com.serialnotes.audio-capture")
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: outputQueue)
+        // The relay holds this capture's context by value so SCK's delegate
+        // paths (sample output *and* didStopWithError) are session-scoped.
+        // SCStream's delegate is weak — the service retains it.
+        let relay = SCKStreamRelay(context: context)
+        let stream = SCStream(filter: filter, configuration: config, delegate: relay)
+        try stream.addStreamOutput(relay, type: .audio, sampleHandlerQueue: outputQueue)
         try await stream.startCapture()
         self.stream = stream
+        self.sckRelay = relay
 
         do {
-            try startMicrophoneEngine(sessionDir: sessionDir, micGranted: micGranted)
+            try startMicrophoneEngine(sessionDir: sessionDir, micGranted: micGranted, context: context)
         } catch {
             try? await stream.stopCapture()
             self.stream = nil
+            self.sckRelay = nil
             throw error
         }
     }
 
     // MARK: - Microphone Engine
 
-    private func startMicrophoneEngine(sessionDir: URL, micGranted: Bool) throws {
+    private func startMicrophoneEngine(sessionDir: URL, micGranted: Bool, context: CaptureContext) throws {
         guard micGranted else { return }
 
         let micEng = AVAudioEngine()
         let micInputNode = micEng.inputNode
-        disableVoiceProcessing(on: micInputNode)
+        disableVoiceProcessing(on: micInputNode, context: context)
 
         let micHwFormat = micInputNode.outputFormat(forBus: 0)
         guard micHwFormat.channelCount > 0, micHwFormat.sampleRate > 0 else {
@@ -316,21 +505,22 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
             forWriting: sessionDir.appendingPathComponent("mic.wav"),
             settings: micTapFormat.settings
         )
-        lock.withLock { micAudioFile = micFile }
+        context.setMicFile(micFile)
 
-        micInputNode.installTap(onBus: 0, bufferSize: 4096, format: micTapFormat) { [weak self] buffer, _ in
-            self?.writeBuffer(buffer, for: \.micAudioFile)
-            self?.recordStats(frames: Int(buffer.frameLength), rate: micTapFormat.sampleRate, side: .mic)
-            if let callback = self?.onMicAudioBuffer,
-               let ownedBuffer = Self.copyBuffer(buffer) {
-                callback(CapturedAudioBuffer(buffer: ownedBuffer))
+        // The tap closure captures only the context — see the IOProc comment.
+        let onMicAudioBuffer = context.callbacks.onMicAudioBuffer
+        micInputNode.installTap(onBus: 0, bufferSize: 4096, format: micTapFormat) { buffer, _ in
+            context.write(buffer, to: .mic)
+            context.recordStats(frames: Int(buffer.frameLength), rate: micTapFormat.sampleRate, sink: .mic)
+            if let ownedBuffer = Self.copyBuffer(buffer) {
+                onMicAudioBuffer(CapturedAudioBuffer(buffer: ownedBuffer))
             }
         }
         try micEng.start()
         micEngine = micEng
     }
 
-    private func disableVoiceProcessing(on inputNode: AVAudioInputNode) {
+    private func disableVoiceProcessing(on inputNode: AVAudioInputNode, context: CaptureContext) {
         // VPIO engages the system Voice Processing AU, which ducks the default
         // output stream so AEC can use it as a reference. That ducking is
         // audible as Zoom/Meet/etc. dropping in volume during recording. We
@@ -343,8 +533,7 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
                 NSLog("[SerialNotes/Capture] could not disable mic voice processing: \(error.localizedDescription)")
             }
         }
-        let enabled = inputNode.isVoiceProcessingEnabled
-        statsLock.withLock { $0.mic.voiceProcessingEnabled = enabled }
+        context.setMicVoiceProcessing(inputNode.isVoiceProcessingEnabled)
     }
 
     // MARK: - Cleanup
@@ -363,113 +552,6 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         if tapInfo.tapID != 0 {
             DestroySystemAudioTap(tapInfo)
             tapInfo = SystemAudioTapInfo(tapID: 0, aggregateDeviceID: 0)
-        }
-    }
-
-    // MARK: - Audio Writing
-
-    private func writeBuffer(_ buffer: AVAudioPCMBuffer, for keyPath: KeyPath<AudioCaptureService, AVAudioFile?>) {
-        lock.withLock {
-            guard let file = self[keyPath: keyPath] else { return }
-            do {
-                try file.write(from: buffer)
-            } catch {
-                onError?(error)
-            }
-        }
-    }
-
-    private enum StreamSide { case system, mic }
-
-    @discardableResult
-    private func recordStats(frames: Int, rate: Double, side: StreamSide) -> Bool {
-        statsLock.withLock {
-            let wasFirst: Bool
-            switch side {
-            case .system:
-                wasFirst = $0.system.bufferCount == 0
-                $0.system.bufferCount += 1
-                $0.system.sampleCount += frames
-                $0.system.sampleRate = rate
-            case .mic:
-                wasFirst = $0.mic.bufferCount == 0
-                $0.mic.bufferCount += 1
-                $0.mic.sampleCount += frames
-                $0.mic.sampleRate = rate
-            }
-            return wasFirst
-        }
-    }
-
-    /// Convert CMSampleBuffer to AVAudioPCMBuffer and write (SCK fallback only)
-    private func writeSampleBuffer(
-        _ sampleBuffer: CMSampleBuffer,
-        to keyPath: KeyPath<AudioCaptureService, AVAudioFile?>,
-        callback: ((@Sendable (CapturedAudioBuffer) -> Void))? = nil
-    ) {
-        guard let formatDescription = sampleBuffer.formatDescription,
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
-              let format = AVAudioFormat(streamDescription: asbd),
-              let blockBuffer = sampleBuffer.dataBuffer else {
-            return
-        }
-
-        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard frameCount > 0,
-              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
-            return
-        }
-
-        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
-
-        var dataLength = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &dataLength, dataPointerOut: &dataPointer)
-        guard status == kCMBlockBufferNoErr, let dataPointer else { return }
-
-        // Ensure we have float channel data (SCK should always deliver float32)
-        guard let destPtr = pcmBuffer.floatChannelData?[0] else { return }
-
-        let bytesToCopy = min(dataLength, Int(pcmBuffer.frameLength) * Int(format.streamDescription.pointee.mBytesPerFrame))
-        memcpy(destPtr, dataPointer, bytesToCopy)
-
-        // System audio (SCK path) creates system.wav lazily so the file header
-        // is stamped with the rate actually delivered, not the requested 48 kHz.
-        if keyPath == \AudioCaptureService.systemAudioFile {
-            ensureSystemFileForSCK(matching: format)
-        }
-        writeBuffer(pcmBuffer, for: keyPath)
-
-        if let callback {
-            callback(CapturedAudioBuffer(buffer: pcmBuffer))
-        }
-    }
-
-    /// Lazily create the SCK path's `system.wav` using the rate SCK *actually*
-    /// delivers. The `SCStreamConfiguration` only requests `Self.sampleRate`;
-    /// SCK can resample to something else (notably 24 kHz on Bluetooth/HFP "call
-    /// mode"), and stamping the header with the delivered rate keeps playback
-    /// duration honest so the diarizer + ASR second pass aren't time-warped.
-    /// Channels stay mono (the stream is configured for one channel and the
-    /// delivered buffers are mono) — only the rate is taken from the buffer.
-    private func ensureSystemFileForSCK(matching deliveredFormat: AVAudioFormat) {
-        lock.withLock {
-            guard systemAudioFile == nil, let dir = sckSystemFileDir else { return }
-            let writeFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: deliveredFormat.sampleRate,
-                channels: Self.channelCount,
-                interleaved: false
-            ) ?? deliveredFormat
-            do {
-                systemAudioFile = try AVAudioFile(
-                    forWriting: dir.appendingPathComponent("system.wav"),
-                    settings: writeFormat.settings
-                )
-                NSLog("[SerialNotes/Capture] SCK system.wav created at delivered rate \(deliveredFormat.sampleRate)")
-            } catch {
-                onError?(error)
-            }
         }
     }
 
@@ -509,9 +591,19 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
 
 }
 
-// MARK: - SCStreamOutput (fallback)
+// MARK: - SCK relay (fallback)
 
-extension AudioCaptureService: SCStreamOutput {
+/// Per-capture SCStream output + delegate. Holds its capture's context by value
+/// so both sample delivery and `didStopWithError` are session-scoped — a
+/// straggler from a stopped stream can't feed, write into, or error the next
+/// session.
+private final class SCKStreamRelay: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    private let context: CaptureContext
+
+    init(context: CaptureContext) {
+        self.context = context
+    }
+
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard sampleBuffer.isValid else { return }
         let frames = CMSampleBufferGetNumSamples(sampleBuffer)
@@ -522,24 +614,20 @@ extension AudioCaptureService: SCStreamOutput {
         let rate = asbd.pointee.mSampleRate
         switch type {
         case .audio:
-            writeSampleBuffer(sampleBuffer, to: \.systemAudioFile, callback: onSystemAudioBuffer)
-            recordStats(frames: frames, rate: rate, side: .system)
+            context.writeSampleBuffer(sampleBuffer, to: .system, callback: context.callbacks.onSystemAudioBuffer)
+            context.recordStats(frames: frames, rate: rate, sink: .system)
         case .microphone:
-            writeSampleBuffer(sampleBuffer, to: \.micAudioFile, callback: onMicAudioBuffer)
-            recordStats(frames: frames, rate: rate, side: .mic)
+            context.writeSampleBuffer(sampleBuffer, to: .mic, callback: context.callbacks.onMicAudioBuffer)
+            context.recordStats(frames: frames, rate: rate, sink: .mic)
         case .screen:
             break
         @unknown default:
             break
         }
     }
-}
 
-// MARK: - SCStreamDelegate (fallback)
-
-extension AudioCaptureService: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        onError?(error)
+        context.callbacks.onError(error)
     }
 }
 

@@ -106,6 +106,10 @@ final class MeetingDetectionService {
 
     @ObservationIgnored var onRecordRequested: (() -> Void)?
     @ObservationIgnored var onStopRecordingRequested: ((RecordingStopReason) -> Void)?
+    /// Whether the app can start a recording right now (ASR models ready).
+    /// Gates the start prompt the same way the popover gates its Record card —
+    /// nil (unwired, e.g. tests) means always ready.
+    @ObservationIgnored var isReadyToRecord: (() -> Bool)?
 
     @ObservationIgnored private weak var recordingState: RecordingState?
     @ObservationIgnored private weak var meetingSettings: MeetingSettings?
@@ -124,6 +128,16 @@ final class MeetingDetectionService {
     @ObservationIgnored private var runningMeetingApps: Set<String> = []
     // Paused while voice enrollment holds the mic (so its own capture can't prompt).
     @ObservationIgnored private var isSuspended: Bool = false
+
+    // Post-meeting naming prompts, queued because the banner is a single panel
+    // (see showSpeakerNamingPrompt).
+    private struct NamingPrompt {
+        let count: Int
+        let onName: @MainActor () -> Void
+        let onDismiss: @MainActor () -> Void
+    }
+    @ObservationIgnored private var pendingNamingPrompts: [NamingPrompt] = []
+    @ObservationIgnored private var activeNamingPrompt: NamingPrompt?
 
     // MARK: Call-end monitoring (unchanged)
     @ObservationIgnored private let audioActivityMonitor = MeetingAudioActivityMonitor()
@@ -177,16 +191,53 @@ final class MeetingDetectionService {
         handleStartEffects(startDetector.dismiss())
     }
 
-    /// Surface the post-meeting "name these speakers" banner. A thin pass-through to
-    /// the banner the service already owns — intentionally independent of the call-end
-    /// state machine (this has no detection or stop semantics; it fires after a
-    /// recording has already finalized).
+    /// Surface the post-meeting "name these speakers" banner. Intentionally
+    /// independent of the call-end state machine (this has no detection or stop
+    /// semantics; it fires after a recording has already finalized).
+    ///
+    /// QUEUED, one at a time: back-to-back meetings can finish with unnamed
+    /// speakers together (deferred post-meeting actions flush in one burst), and
+    /// the banner is a single panel — showing them synchronously would replace
+    /// every prompt but the last within one run-loop tick. Each prompt shows
+    /// when its predecessor is named/dismissed/auto-dismissed.
     func showSpeakerNamingPrompt(
         count: Int,
         onName: @escaping @MainActor () -> Void,
         onDismiss: @escaping @MainActor () -> Void
     ) {
-        banner.showSpeakerNamingPrompt(count: count, onName: onName, onDismiss: onDismiss)
+        pendingNamingPrompts.append(NamingPrompt(count: count, onName: onName, onDismiss: onDismiss))
+        showNextNamingPromptIfFree()
+    }
+
+    private func showNextNamingPromptIfFree() {
+        guard activeNamingPrompt == nil, !pendingNamingPrompts.isEmpty else { return }
+        let prompt = pendingNamingPrompts.removeFirst()
+        activeNamingPrompt = prompt
+        banner.showSpeakerNamingPrompt(
+            count: prompt.count,
+            onName: { [weak self] in
+                prompt.onName()
+                self?.namingPromptFinished()
+            },
+            onDismiss: { [weak self] in
+                prompt.onDismiss()
+                self?.namingPromptFinished()
+            }
+        )
+    }
+
+    private func namingPromptFinished() {
+        activeNamingPrompt = nil
+        showNextNamingPromptIfFree()
+    }
+
+    /// A start/end prompt is about to take the shared banner panel while a
+    /// naming prompt is visible — its callbacks will never fire, so put it back
+    /// at the head of the queue to reappear once the panel frees up.
+    private func requeueActiveNamingPromptIfAny() {
+        guard let active = activeNamingPrompt else { return }
+        activeNamingPrompt = nil
+        pendingNamingPrompts.insert(active, at: 0)
     }
 
     /// Pause detection — used while voice enrollment holds the mic. (Edge-triggering
@@ -230,13 +281,26 @@ final class MeetingDetectionService {
     // MARK: - Start detection (monitor → reducer → banner)
 
     /// Whether the input-capture monitor should be running: a known meeting app is
-    /// open, no recording session is in flight (start-up → active → finalizing), and
-    /// detection isn't suspended. When no meeting app is running nothing can be in a
-    /// call, so the monitor and its poll stay off entirely — no idle churn.
+    /// open, no recording session is in flight (start-up → active → finalizing),
+    /// detection isn't suspended, and the app can actually record (ASR models
+    /// ready). Gating the MONITOR on readiness — not just the prompt — matters:
+    /// a prompt suppressed after the reducer locked would wedge the lock for the
+    /// whole call; keeping the monitor down means no transitions are consumed at
+    /// all, and `modelReadinessChanged` re-baselines once models arrive. When no
+    /// meeting app is running nothing can be in a call, so the monitor and its
+    /// poll stay off entirely — no idle churn.
     private var shouldMonitorInput: Bool {
         !isSuspended
             && !runningMeetingApps.isEmpty
             && recordingState?.isRecordingSessionActive != true
+            && isReadyToRecord?() != false
+    }
+
+    /// Nudge from the app shell when the model download completes — nothing else
+    /// re-evaluates monitoring at that moment, so without this the monitor would
+    /// stay down until the next workspace/recording event.
+    func modelReadinessChanged() {
+        updateInputMonitoring()
     }
 
     /// Start the monitor with a fresh `MeetingStartDetector`, re-establishing the
@@ -276,10 +340,18 @@ final class MeetingDetectionService {
                 startDebounceTask = nil
             case .showPrompt(let bundleID):
                 // Defense in depth: never surface a start prompt while a recording
-                // session is active. The monitor is paused then, but the
-                // finalization window isn't signalled through recordingStateChanged.
+                // session is active or before the ASR models are ready (the
+                // monitor is gated on both, but the windows aren't all signalled
+                // through recordingStateChanged). A suppressed prompt must also
+                // RELEASE the reducer's lock — the lock was set when the prompt
+                // fired, and holding it promptless would block every later
+                // prompt until the app stops capturing.
                 guard recordingState?.isRecordingSessionActive != true,
-                      let appName = Self.knownMeetingApps[bundleID]?.displayName else { break }
+                      isReadyToRecord?() != false,
+                      let appName = Self.knownMeetingApps[bundleID]?.displayName else {
+                    startDetector.releaseLock()
+                    break
+                }
                 applyDetection(bundleID: bundleID, appName: appName)
             case .hidePrompt:
                 clearDetected()
@@ -317,6 +389,7 @@ final class MeetingDetectionService {
     }
 
     private func applyDetection(bundleID: String, appName: String) {
+        requeueActiveNamingPromptIfAny()
         detectedMeeting = DetectedMeeting(
             appName: appName,
             bundleIdentifier: bundleID,
@@ -329,6 +402,9 @@ final class MeetingDetectionService {
         guard detectedMeeting != nil else { return }
         detectedMeeting = nil
         banner.hide()
+        // The panel is free again — a naming prompt the start prompt displaced
+        // (or one that queued behind it) can show now.
+        showNextNamingPromptIfFree()
     }
 
     // MARK: - Call End Monitoring
@@ -365,6 +441,10 @@ final class MeetingDetectionService {
         if meetingDiagnostics.shouldWriteSidecar {
             recordingState?.attachMeetingDiagnosticsForCurrentStop(meetingDiagnostics)
         }
+        // The recording this lock produced is over. Release it so a follow-up
+        // recording started during this one's finalization can't inherit the
+        // association (see MeetingStartDetector.releaseLock).
+        startDetector.releaseLock()
         callEndGraceTask?.cancel()
         callEndGraceTask = nil
         callEndCountdownTask?.cancel()
@@ -401,7 +481,7 @@ final class MeetingDetectionService {
                 switch reason {
                 case .callEndedAuto:
                     markAutoStopFired(at: Date())
-                case .manual, .appQuit:
+                case .manual, .appQuit, .captureFailed:
                     break
                 }
                 onStopRecordingRequested?(reason)

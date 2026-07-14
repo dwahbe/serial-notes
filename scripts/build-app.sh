@@ -39,6 +39,17 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 
+# SwiftPM resource bundles (e.g. KeyboardShortcuts' localizations). Bundle.module
+# fatalErrors at runtime if a package's bundle is missing from Contents/Resources,
+# so copy every generated *.bundle. Resource-only bundles carry no code and are
+# sealed by the outer app signature; a bundle that ever gains an executable would
+# need its own inside-out codesign step like Sparkle below.
+for RESOURCE_BUNDLE in "$ROOT/.build/$CONFIG"/*.bundle; do
+    [[ -d "$RESOURCE_BUNDLE" ]] || continue
+    echo "==> bundling $(basename "$RESOURCE_BUNDLE")"
+    ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+done
+
 # App icon (CFBundleIconFile=AppIcon in Info.plist). Regenerate the .icns from
 # the brand mark with ./icon/make-icon.sh. Warn rather than fail if it's
 # missing so a checkout without the prebuilt icon still produces a runnable app.

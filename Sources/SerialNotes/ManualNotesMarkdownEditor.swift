@@ -3,8 +3,23 @@ import SwiftUI
 
 final class ManualNotesTextView: NSTextView {
     struct RenderedBullet: Equatable {
+        enum Kind: Equatable {
+            case bullet
+            case uncheckedTask
+            case checkedTask
+
+            var glyph: String {
+                switch self {
+                case .bullet: "•"
+                case .uncheckedTask: "☐"
+                case .checkedTask: "☑︎"
+                }
+            }
+        }
+
         let lineRange: NSRange
         let indentLevel: Int
+        let kind: Kind
     }
 
     var renderedBullets: [RenderedBullet] = [] {
@@ -31,12 +46,12 @@ final class ManualNotesTextView: NSTextView {
             .font: NSFont.systemFont(ofSize: 15, weight: .regular),
             .foregroundColor: NSColor.labelColor
         ]
-        let bullet = "•" as NSString
-        let bulletSize = bullet.size(withAttributes: attributes)
         let origin = textContainerOrigin
         let indentStep = ManualNotesMarkdownEditor.Coordinator.listIndentStep
 
         for rendered in renderedBullets where rendered.lineRange.location < string.utf16.count {
+            let bullet = rendered.kind.glyph as NSString
+            let bulletSize = bullet.size(withAttributes: attributes)
             let glyphRange = layoutManager.glyphRange(
                 forCharacterRange: rendered.lineRange,
                 actualCharacterRange: nil
@@ -129,8 +144,10 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
         weak var textView: NSTextView?
         private var applyingStyle = false
         private var applyingAutomaticEdit = false
-        /// The paragraph range last styled for the caret position, so a selection
-        /// change that stays within the same paragraph skips re-styling entirely.
+        /// The paragraph range used by the most recent selection-aware style pass.
+        /// Inline syntax can reveal while the caret moves within that paragraph,
+        /// so this only identifies the paragraph that may need re-hiding; it must
+        /// not be used to skip same-paragraph selection changes.
         private var styledSelectionParagraph: NSRange?
 
         init(text: Binding<String>) {
@@ -150,14 +167,34 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             }
 
             // Deliberately no auto-conversion when the user types a bare "*": it must
-            // stay a literal asterisk so it can also begin italic (`*word*`). A line
-            // becomes a bullet only once the user types the space in "* " — handled by
-            // the list regex during styling — matching Obsidian / Google Docs / Word.
+            // stay a literal asterisk so it can also begin italic (`*word*`). The
+            // trailing space commits a marker as a list item, matching Obsidian /
+            // Google Docs / Word.
+
+            if replacementString == " ",
+               let startEdit = Self.listStartEdit(
+                   at: affectedCharRange.location,
+                   in: textView.string
+               )
+            {
+                replaceText(
+                    in: startEdit.range,
+                    with: startEdit.replacement,
+                    textView: textView,
+                    selectionAfter: startEdit.selectionAfter
+                )
+                return false
+            }
 
             if replacementString == "\n",
                let continuation = Self.listContinuation(at: affectedCharRange.location, in: textView.string)
             {
-                replaceText(in: continuation.range, with: continuation.replacement, textView: textView)
+                replaceText(
+                    in: continuation.range,
+                    with: continuation.replacement,
+                    textView: textView,
+                    selectionAfter: continuation.selectionAfter
+                )
                 return false
             }
 
@@ -176,15 +213,26 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            guard commandSelector == #selector(NSResponder.insertBacktab(_:)),
-                  let indentEdit = Self.listIndentEdit(
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)),
+               let indentEdit = Self.listIndentEdit(
                       at: textView.selectedRange().location,
                       in: textView.string,
                       outdent: true
-                  )
-            else { return false }
-            replaceText(in: indentEdit.range, with: indentEdit.replacement, textView: textView)
-            return true
+               )
+            {
+                replaceText(in: indentEdit.range, with: indentEdit.replacement, textView: textView)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.deleteBackward(_:)),
+               let deletion = Self.listBackspaceEdit(
+                   at: textView.selectedRange(),
+                   in: textView.string
+               )
+            {
+                replaceText(in: deletion.range, with: deletion.replacement, textView: textView)
+                return true
+            }
+            return false
         }
 
         /// Tab / Shift-Tab with the caret on a list line indents or outdents the
@@ -219,6 +267,126 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             return nil
         }
 
+        /// Backspace anywhere inside a list item's marker region (up to and
+        /// including the start of its content) removes structural Markdown
+        /// instead of eating hidden marker glyphs one character at a time.
+        /// Nested items outdent by one level first; top-level bullets, tasks, and
+        /// ordered items become ordinary text.
+        private static func listBackspaceEdit(
+            at selection: NSRange,
+            in text: String
+        ) -> (range: NSRange, replacement: String)? {
+            guard selection.length == 0 else { return nil }
+            let source = text as NSString
+            let safeLocation = min(max(selection.location, 0), source.length)
+            let lineRange = contentLineRange(containing: safeLocation, in: source)
+            let line = source.substring(with: lineRange)
+            let lineSource = line as NSString
+            guard let match = listRegex.firstMatch(
+                in: line,
+                range: NSRange(location: 0, length: lineSource.length)
+            ) else { return nil }
+
+            // Ordered "tasks" aren't part of the grammar — the notepad renders
+            // their brackets literally — so the box counts as content there.
+            let marker = lineSource.substring(with: match.range(at: 2))
+            let contentStart = match.range(at: 4).location == NSNotFound || isOrderedMarkerShape(marker)
+                ? NSMaxRange(match.range(at: 3))
+                : NSMaxRange(match.range(at: 5))
+            // Fire from anywhere within the marker region: the glyphs there are
+            // hidden (or drawn as a custom bullet), so single-character deletion
+            // would silently corrupt structure the user can't see.
+            guard safeLocation > lineRange.location,
+                  safeLocation <= lineRange.location + contentStart
+            else { return nil }
+
+            let indent = lineSource.substring(with: match.range(at: 1))
+            if !indent.isEmpty {
+                return listIndentEdit(at: safeLocation, in: text, outdent: true)
+            }
+            return (NSRange(location: lineRange.location, length: contentStart), "")
+        }
+
+        /// Commits a marker-only line when its trailing space is typed. Bullets
+        /// simply enter list mode. An ordered marker immediately following an
+        /// ordered item at the same nesting depth resumes that list's numbering;
+        /// a blank line or a different list type/depth starts a new list instead.
+        /// Followers that continued the resumed number shift up by one, exactly
+        /// as the Enter path does — the two insertion gestures must agree.
+        private static func listStartEdit(
+            at location: Int,
+            in text: String
+        ) -> (range: NSRange, replacement: String, selectionAfter: NSRange?)? {
+            let source = text as NSString
+            let safeLocation = min(max(location, 0), source.length)
+            let lineRange = contentLineRange(containing: safeLocation, in: source)
+            guard safeLocation == NSMaxRange(lineRange) else { return nil }
+
+            let line = source.substring(with: lineRange)
+            let localRange = NSRange(location: 0, length: (line as NSString).length)
+            guard let match = listMarkerOnlyRegex.firstMatch(in: line, range: localRange)
+            else { return nil }
+
+            let lineSource = line as NSString
+            let indent = lineSource.substring(with: match.range(at: 1))
+            let typedMarker = lineSource.substring(with: match.range(at: 2))
+            var resolvedMarker = typedMarker
+
+            if let typed = OrderedMarker(typedMarker),
+               lineRange.location > 0
+            {
+                let previousRange = contentLineRange(
+                    containing: lineRange.location - 1,
+                    in: source
+                )
+                let previousLine = source.substring(with: previousRange)
+                let previousSource = previousLine as NSString
+                let previousLocalRange = NSRange(location: 0, length: previousSource.length)
+                if let previousMatch = listRegex.firstMatch(
+                    in: previousLine,
+                    range: previousLocalRange
+                ) {
+                    let previousIndent = previousSource.substring(with: previousMatch.range(at: 1))
+                    let previousMarker = previousSource.substring(with: previousMatch.range(at: 2))
+                    if let previous = OrderedMarker(previousMarker),
+                       previous.delimiter == typed.delimiter,
+                       TranscriptFormatter.listIndentLevel(of: previousIndent)
+                        == TranscriptFormatter.listIndentLevel(of: indent),
+                       let resumed = previous.next
+                    {
+                        resolvedMarker = resumed.text
+                    }
+                }
+            }
+
+            let committed = "\(indent)\(resolvedMarker) "
+            if let resolved = OrderedMarker(resolvedMarker),
+               let shifted = shiftedFollowerRun(
+                   source: source,
+                   fromFullLineEnd: NSMaxRange(source.lineRange(for: lineRange)),
+                   depth: TranscriptFormatter.listIndentLevel(of: indent),
+                   first: resolved
+               )
+            {
+                // Between this line's content and the follower run sits only the
+                // line terminator — carry it through the single replacement.
+                let terminator = source.substring(with: NSRange(
+                    location: NSMaxRange(lineRange),
+                    length: shifted.range.location - NSMaxRange(lineRange)
+                ))
+                let range = NSRange(
+                    location: lineRange.location,
+                    length: NSMaxRange(shifted.range) - lineRange.location
+                )
+                let selection = NSRange(
+                    location: lineRange.location + (committed as NSString).length,
+                    length: 0
+                )
+                return (range, committed + terminator + shifted.rewritten, selection)
+            }
+            return (lineRange, committed, nil)
+        }
+
         func textDidChange(_ notification: Notification) {
             // applyingAutomaticEdit: list continuation goes through replaceText,
             // whose defer does this exact write+restyle once the edit is whole.
@@ -235,14 +403,14 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             guard !applyingStyle, let textView, let storage = textView.textStorage, storage.length > 0
             else { return }
             let para = currentSelectionParagraph(in: textView)
-            guard styledSelectionParagraph != para else { return }
             let previous = styledSelectionParagraph
             styledSelectionParagraph = para
             // Only the line(s) the caret entered/left flip syntax reveal — restyle
-            // those paragraphs instead of re-regexing the whole document on every
-            // arrow key or click. And only when a reveal actually flips: bullet
-            // markers are hidden regardless of selection, so dragging across list
-            // or plain lines must not touch the storage at all.
+            // those paragraphs instead of reparsing the whole document on every
+            // arrow key or click. Plain and list lines skip storage work entirely
+            // (bullet/task markers render live regardless of selection); headings
+            // and inline spans reveal their raw syntax while the selection touches
+            // them.
             //
             // The mutation is also deferred out of this notification. On macOS 26
             // the text view's glyphs, selection highlight, and spell underlines
@@ -257,20 +425,47 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                 staleRanges.append(previous)
             }
             guard !staleRanges.isEmpty else { return }
+            // Coalesce: a burst of selection changes within one run-loop turn
+            // (fast drags, key repeat) merges into a single deferred restyle
+            // instead of stacking one block per event.
+            let alreadyScheduled = !deferredRestyleRanges.isEmpty
+            deferredRestyleRanges.append(contentsOf: staleRanges)
+            guard !alreadyScheduled else { return }
             DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let ranges = Self.mergedRanges(self.deferredRestyleRanges)
+                self.deferredRestyleRanges = []
                 // Skip while IME composition is live — a restyle would clobber the
                 // marked-text underline mid-composition; the next caret move after
                 // the composition confirms will re-run this.
-                guard let self, let textView = self.textView, !textView.hasMarkedText()
+                guard let textView = self.textView, !textView.hasMarkedText()
                 else { return }
-                for range in staleRanges { self.restyleParagraphs(intersecting: range) }
+                for range in ranges { self.restyleParagraphs(intersecting: range) }
             }
+        }
+
+        /// Pending deferred-restyle ranges; non-empty exactly while a flush block
+        /// is queued on the main queue.
+        private var deferredRestyleRanges: [NSRange] = []
+
+        /// Overlapping or touching ranges merged into one, so a coalesced flush
+        /// restyles each paragraph once.
+        private static func mergedRanges(_ ranges: [NSRange]) -> [NSRange] {
+            var merged: [NSRange] = []
+            for range in ranges.sorted(by: { $0.location < $1.location }) {
+                if let last = merged.last, NSMaxRange(last) >= range.location {
+                    merged[merged.count - 1] = NSUnionRange(last, range)
+                } else {
+                    merged.append(range)
+                }
+            }
+            return merged
         }
 
         /// Whether any hidden-syntax run in `range`'s paragraphs must flip between
         /// hidden and revealed for the current selection. Mirrors the reveal policy
-        /// in `applyBlockStyle` (headings reveal per line) and `applyInlineStyle`
-        /// (bold/italic reveal per match) — keep them in lockstep.
+        /// in `applyBlockStyle` (headings reveal per line; list markers never
+        /// reveal) and `applyInlineStyle` — keep them in lockstep.
         private func revealStateNeedsUpdate(in range: NSRange) -> Bool {
             guard let textView, let storage = textView.textStorage, storage.length > 0 else { return false }
             let source = storage.string as NSString
@@ -298,14 +493,28 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             }
             if headingNeedsUpdate { return true }
 
-            for match in Self.inlineSyntaxMatches(in: paraRange, source: source) {
-                let shouldHide = !Self.selectionIntersects(match.matchRange, in: textView)
-                if Self.isSyntaxHidden(match.openingRange, in: storage) != shouldHide {
+            // Most prose paragraphs contain no inline syntax at all — skip the
+            // parse (and its span-tree allocation) unless a trigger character
+            // is present. Keep this set in lockstep with the parser's grammar.
+            guard source.rangeOfCharacter(
+                from: Self.inlineSyntaxTriggers,
+                options: [],
+                range: paraRange
+            ).location != NSNotFound else { return false }
+
+            for span in MarkdownInlineParser.flattenedSpans(in: source as String, range: paraRange) {
+                guard let syntaxRange = span.syntaxRanges.first else { continue }
+                let shouldHide = !Self.selectionIntersects(span.range, in: textView)
+                if Self.isSyntaxHidden(syntaxRange, in: storage) != shouldHide {
                     return true
                 }
             }
             return false
         }
+
+        /// Every character that can begin an inline span (emphasis, strike,
+        /// highlight, code, link, escape) — the cheap pre-filter for the parse.
+        private static let inlineSyntaxTriggers = CharacterSet(charactersIn: "*_~=`[\\")
 
         private static func isSyntaxHidden(_ range: NSRange, in storage: NSTextStorage) -> Bool {
             guard range.length > 0, NSMaxRange(range) <= storage.length else { return false }
@@ -372,10 +581,10 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
         }
 
         /// Restyle only the paragraph(s) intersecting `range`, leaving the rest of
-        /// the document — and the document-wide bullet list — untouched. Correct for
-        /// selection changes because all of this editor's syntax rules are line-scoped
-        /// (`[^*\n]` inline regexes never cross a newline) and bullet glyph positions
-        /// don't move when only the selection changes.
+        /// the document untouched. Inline rules never cross a newline. The custom
+        /// bullet/task entries for these lines are recomputed too (the scoped
+        /// `setAttributes` wipes their block styling), merged with the untouched
+        /// lines' existing entries.
         private func restyleParagraphs(intersecting range: NSRange) {
             guard let textView, let storage = textView.textStorage, storage.length > 0 else { return }
             let source = storage.string as NSString
@@ -390,11 +599,27 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             defer { storage.endEditing() }
 
             storage.setAttributes(Self.defaultAttributes(), range: paraRange)
+            var renderedBullets: [ManualNotesTextView.RenderedBullet] = []
             source.enumerateSubstrings(
                 in: paraRange,
                 options: [.byLines, .substringNotRequired]
             ) { _, lineRange, _, _ in
-                _ = self.applyBlockStyle(in: lineRange, source: source, storage: storage, textView: textView)
+                if let rendered = self.applyBlockStyle(
+                    in: lineRange,
+                    source: source,
+                    storage: storage,
+                    textView: textView
+                ) {
+                    renderedBullets.append(rendered)
+                }
+            }
+            if let notesTextView = textView as? ManualNotesTextView {
+                let untouched = notesTextView.renderedBullets.filter {
+                    NSIntersectionRange($0.lineRange, paraRange).length == 0
+                }
+                notesTextView.renderedBullets = (untouched + renderedBullets).sorted {
+                    $0.lineRange.location < $1.lineRange.location
+                }
             }
             applyInlineStyle(in: paraRange, source: source, storage: storage, textView: textView)
         }
@@ -407,8 +632,10 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             // The full pass bakes reveal state for the *current* selection, so
             // record which paragraph that was — every caller, not just
             // textDidChange, must leave the bookkeeping consistent or a later
-            // selection change skips re-hiding a revealed marker.
+            // selection change skips re-hiding a revealed marker. It also
+            // supersedes any pending scoped restyles.
             styledSelectionParagraph = currentSelectionParagraph(in: textView)
+            deferredRestyleRanges = []
 
             applyingStyle = true
             defer { applyingStyle = false }
@@ -432,23 +659,28 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                 in: NSRange(location: 0, length: source.length),
                 options: [.byLines, .substringNotRequired]
             ) { _, lineRange, _, _ in
-                if let level = self.applyBlockStyle(in: lineRange, source: source, storage: storage, textView: textView) {
-                    renderedBullets.append(.init(lineRange: lineRange, indentLevel: level))
+                if let rendered = self.applyBlockStyle(
+                    in: lineRange,
+                    source: source,
+                    storage: storage,
+                    textView: textView
+                ) {
+                    renderedBullets.append(rendered)
                 }
             }
             (textView as? ManualNotesTextView)?.renderedBullets = renderedBullets
             applyInlineStyle(in: fullRange, source: source, storage: storage, textView: textView)
         }
 
-        /// Returns the indent level to draw a custom "•" at, or nil when the line
-        /// gets no drawn bullet (headings, plain text, and ordered items — whose
-        /// number stays visible as its own marker).
+        /// Returns a custom bullet/task glyph to draw, or nil when the line gets no
+        /// drawn marker (headings, plain text, and ordered items — whose number
+        /// stays visible as its own marker).
         private func applyBlockStyle(
             in lineRange: NSRange,
             source: NSString,
             storage: NSTextStorage,
             textView: NSTextView
-        ) -> Int? {
+        ) -> ManualNotesTextView.RenderedBullet? {
             guard lineRange.length > 0 else { return nil }
             let line = source.substring(with: lineRange)
             guard let match = Self.headingRegex.firstMatch(
@@ -477,17 +709,31 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                     // glyphs are hidden with the marker (visible tabs would jump to
                     // unrelated tab stops and break the per-level columns).
                     Self.hideSyntax(indentRange, storage: storage)
-                    if marker.hasSuffix(".") {
+                    if Self.isOrderedMarkerShape(marker) {
                         // Ordered item: the number itself is the visible marker.
                         return nil
                     }
-                    // Hide only the marker glyph (the "•" is custom-drawn in its place)
-                    // and leave the trailing space at full size. On an empty bullet that
-                    // space is the only glyph on the line, so keeping it at 15pt is what
-                    // gives the insertion point a full-height, visible caret — hiding it
-                    // too would collapse the caret to the 0.1pt hidden font.
+
+                    // The marker hides unconditionally — even on the caret's line —
+                    // so a committed bullet renders live while the user types on it
+                    // (Obsidian parity). One delimiter space remains full-size so an
+                    // empty item retains a normal-height caret.
                     Self.hideSyntax(markerRange, storage: storage)
-                    return level
+
+                    var kind = ManualNotesTextView.RenderedBullet.Kind.bullet
+                    if listMatch.range(at: 4).location != NSNotFound {
+                        let markerSpacingRange = Self.absoluteRange(listMatch.range(at: 3), in: lineRange)
+                        let taskRange = Self.absoluteRange(listMatch.range(at: 4), in: lineRange)
+                        let task = lineSource.substring(with: listMatch.range(at: 4))
+                        // A task has whitespace on both sides of `[ ]`. Collapse
+                        // the first one with the hidden marker so task content
+                        // starts in the same column as an ordinary bullet; the
+                        // second stays full-size to keep an empty task's caret tall.
+                        Self.hideSyntax(markerSpacingRange, storage: storage)
+                        Self.hideSyntax(taskRange, storage: storage)
+                        kind = task.lowercased() == "[x]" ? .checkedTask : .uncheckedTask
+                    }
+                    return .init(lineRange: lineRange, indentLevel: level, kind: kind)
                 }
                 return nil
             }
@@ -515,60 +761,57 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             return nil
         }
 
-        private struct InlineSyntaxMatch {
-            let matchRange: NSRange
-            let openingRange: NSRange
-            let contentRange: NSRange
-            let closingRange: NSRange
-            let traits: NSFontTraitMask
-        }
-
-        /// All emphasis spans in `range`, strongest fence first: `***` before `**`
-        /// before `*`, with later passes skipping anything a stronger match already
-        /// consumed — otherwise the bold pass eats the inside of a `***` fence and
-        /// strands literal asterisks. Shared by `applyInlineStyle` and
-        /// `revealStateNeedsUpdate` so reveal decisions can't drift from rendering.
-        private static func inlineSyntaxMatches(in range: NSRange, source: NSString) -> [InlineSyntaxMatch] {
-            let passes: [(regex: NSRegularExpression, traits: NSFontTraitMask)] = [
-                (boldItalicRegex, [.boldFontMask, .italicFontMask]),
-                (boldRegex, .boldFontMask),
-                (italicRegex, .italicFontMask)
-            ]
-            var consumed: [NSRange] = []
-            var matches: [InlineSyntaxMatch] = []
-            for pass in passes {
-                for match in pass.regex.matches(in: source as String, range: range) {
-                    guard match.numberOfRanges >= 4 else { continue }
-                    let matchRange = match.range(at: 0)
-                    guard !consumed.contains(where: { NSIntersectionRange($0, matchRange).length > 0 })
-                    else { continue }
-                    consumed.append(matchRange)
-                    matches.append(InlineSyntaxMatch(
-                        matchRange: matchRange,
-                        openingRange: match.range(at: 1),
-                        contentRange: match.range(at: 2),
-                        closingRange: match.range(at: 3),
-                        traits: pass.traits
-                    ))
-                }
-            }
-            return matches
-        }
-
         private func applyInlineStyle(in range: NSRange, source: NSString, storage: NSTextStorage, textView: NSTextView) {
-            for match in Self.inlineSyntaxMatches(in: range, source: source) {
-                storage.addAttributes(
-                    [.font: Self.font(in: storage, at: match.contentRange, adding: match.traits)],
-                    range: match.contentRange
-                )
-                if !Self.selectionIntersects(match.matchRange, in: textView) {
-                    Self.hideSyntax(match.openingRange, storage: storage)
-                    Self.hideSyntax(match.closingRange, storage: storage)
+            for span in MarkdownInlineParser.flattenedSpans(in: source as String, range: range) {
+                switch span.kind {
+                case .bold:
+                    Self.addFontTraits(.boldFontMask, to: span.contentRange, storage: storage)
+                case .italic:
+                    Self.addFontTraits(.italicFontMask, to: span.contentRange, storage: storage)
+                case .boldItalic:
+                    Self.addFontTraits([.boldFontMask, .italicFontMask], to: span.contentRange, storage: storage)
+                case .strikethrough:
+                    storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: span.contentRange)
+                case .highlight:
+                    storage.addAttribute(
+                        .backgroundColor,
+                        value: NSColor.systemYellow.withAlphaComponent(0.28),
+                        range: span.contentRange
+                    )
+                case .code:
+                    Self.applyCodeFont(to: span.contentRange, storage: storage)
+                    storage.addAttribute(
+                        .backgroundColor,
+                        value: NSColor.quaternaryLabelColor.withAlphaComponent(0.18),
+                        range: span.contentRange
+                    )
+                case let .link(destination):
+                    storage.addAttributes(
+                        [
+                            .foregroundColor: NSColor.linkColor,
+                            .underlineStyle: NSUnderlineStyle.single.rawValue,
+                            .link: destination
+                        ],
+                        range: span.contentRange
+                    )
+                case .escape:
+                    break
+                }
+
+                if !Self.selectionIntersects(span.range, in: textView) {
+                    for syntaxRange in span.syntaxRanges {
+                        Self.hideSyntax(syntaxRange, storage: storage)
+                    }
                 }
             }
         }
 
-        private func replaceText(in range: NSRange, with replacement: String, textView: NSTextView) {
+        private func replaceText(
+            in range: NSRange,
+            with replacement: String,
+            textView: NSTextView,
+            selectionAfter: NSRange? = nil
+        ) {
             applyingAutomaticEdit = true
             defer {
                 applyingAutomaticEdit = false
@@ -576,6 +819,9 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                 applyMarkdownStyling()
             }
             textView.insertText(replacement, replacementRange: range)
+            if let selectionAfter {
+                textView.setSelectedRange(selectionAfter)
+            }
         }
 
         nonisolated static var bodyFont: NSFont { .systemFont(ofSize: 15) }
@@ -640,15 +886,40 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             }
         }
 
-        private static func font(
-            in storage: NSTextStorage,
-            at range: NSRange,
-            adding trait: NSFontTraitMask
-        ) -> NSFont {
-            let location = min(max(range.location, 0), max(storage.length - 1, 0))
-            let current = storage.attribute(.font, at: location, effectiveRange: nil) as? NSFont
-                ?? NSFont.systemFont(ofSize: 15)
-            return NSFontManager.shared.convert(current, toHaveTrait: trait)
+        /// Swap each run to the monospaced system font while preserving the size
+        /// and bold/italic that enclosing spans (emphasis, headings) already
+        /// applied — the exporter nests `<code>` inside `<b>`/`<i>`, so the
+        /// notepad must render the same combination.
+        private static func applyCodeFont(to range: NSRange, storage: NSTextStorage) {
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+            storage.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+                let current = value as? NSFont ?? bodyFont
+                let traits = NSFontManager.shared.traits(of: current)
+                var mono = NSFont.monospacedSystemFont(
+                    ofSize: current.pointSize,
+                    weight: traits.contains(.boldFontMask) ? .bold : .regular
+                )
+                if traits.contains(.italicFontMask) {
+                    mono = NSFontManager.shared.convert(mono, toHaveTrait: .italicFontMask)
+                }
+                storage.addAttribute(.font, value: mono, range: subrange)
+            }
+        }
+
+        private static func addFontTraits(
+            _ traits: NSFontTraitMask,
+            to range: NSRange,
+            storage: NSTextStorage
+        ) {
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+            storage.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+                let current = value as? NSFont ?? bodyFont
+                storage.addAttribute(
+                    .font,
+                    value: NSFontManager.shared.convert(current, toHaveTrait: traits),
+                    range: subrange
+                )
+            }
         }
 
         private static func hideSyntax(_ range: NSRange, storage: NSTextStorage) {
@@ -680,7 +951,10 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             NSRange(location: lineRange.location + localRange.location, length: localRange.length)
         }
 
-        private static func listContinuation(at location: Int, in text: String) -> (range: NSRange, replacement: String)? {
+        private static func listContinuation(
+            at location: Int,
+            in text: String
+        ) -> (range: NSRange, replacement: String, selectionAfter: NSRange?)? {
             let source = text as NSString
             let safeLocation = min(max(location, 0), source.length)
             let lineRange = contentLineRange(containing: safeLocation, in: source)
@@ -695,22 +969,126 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             }
 
             let lineSource = line as NSString
-            let contentStart = match.range(at: 3).location + match.range(at: 3).length
+            let taskRange = match.range(at: 4)
+            let taskSpacingRange = match.range(at: 5)
+            let marker = lineSource.substring(with: match.range(at: 2))
+            // Ordered "tasks" aren't part of the grammar — the notepad renders
+            // their brackets literally, so the box counts as content and Enter
+            // must not propagate it.
+            let taskMatched = taskRange.location != NSNotFound && !isOrderedMarkerShape(marker)
+            let contentStart: Int
+            if taskMatched {
+                contentStart = NSMaxRange(taskSpacingRange)
+            } else {
+                contentStart = NSMaxRange(match.range(at: 3))
+            }
             let contentRange = NSRange(location: contentStart, length: max(0, lineSource.length - contentStart))
             let content = lineSource.substring(with: contentRange)
             if content.trimmingCharacters(in: .whitespaces).isEmpty {
-                return (lineRange, "")
+                return (lineRange, "", nil)
             }
 
             let indent = lineSource.substring(with: match.range(at: 1))
-            let marker = lineSource.substring(with: match.range(at: 2))
-            let nextMarker: String
-            if marker.hasSuffix("."), let number = Int(marker.dropLast()) {
-                nextMarker = "\(number + 1)."
-            } else {
-                nextMarker = marker
+            let ordered = OrderedMarker(marker)
+            let nextMarker = ordered?.next?.text ?? marker
+            let taskPrefix = taskMatched ? "[ ] " : ""
+            let insertion = "\n\(indent)\(nextMarker) \(taskPrefix)"
+            if let next = ordered?.next,
+               let shifted = shiftedFollowerRun(
+                   source: source,
+                   fromFullLineEnd: NSMaxRange(source.lineRange(for: lineRange)),
+                   depth: TranscriptFormatter.listIndentLevel(of: indent),
+                   first: next
+               )
+            {
+                // Between the caret (end of content) and the follower run sits
+                // only this line's terminator — carry it through unchanged so
+                // the whole insertion + renumber stays a single replacement.
+                let terminator = source.substring(with: NSRange(
+                    location: safeLocation,
+                    length: shifted.range.location - safeLocation
+                ))
+                let range = NSRange(
+                    location: safeLocation,
+                    length: NSMaxRange(shifted.range) - safeLocation
+                )
+                let selection = NSRange(
+                    location: safeLocation + (insertion as NSString).length,
+                    length: 0
+                )
+                return (range, insertion + terminator + shifted.rewritten, selection)
             }
-            return (NSRange(location: safeLocation, length: 0), "\n\(indent)\(nextMarker) ")
+            return (NSRange(location: safeLocation, length: 0), insertion, nil)
+        }
+
+        /// The sequential same-depth ordered run starting directly below
+        /// `fromFullLineEnd`, rewritten with every number shifted up by one —
+        /// what makes room for an item numbered `first` inserted above it.
+        /// Nil when no follower continues `first`'s sequence: deliberately
+        /// numbered or broken sequences are left alone, and a blank line ends
+        /// the list. Nested children are traversed but keep their own numbering.
+        private static func shiftedFollowerRun(
+            source: NSString,
+            fromFullLineEnd: Int,
+            depth: Int,
+            first: OrderedMarker
+        ) -> (range: NSRange, rewritten: String)? {
+            var cursor = fromFullLineEnd
+            guard cursor < source.length else { return nil }
+
+            var expected = first
+            var replacements: [(range: NSRange, marker: String)] = []
+            var scanEnd = fromFullLineEnd
+
+            while cursor < source.length {
+                let contentRange = contentLineRange(containing: cursor, in: source)
+                guard contentRange.length > 0 else { break }
+                let line = source.substring(with: contentRange)
+                let lineSource = line as NSString
+                guard let match = listRegex.firstMatch(
+                    in: line,
+                    range: NSRange(location: 0, length: lineSource.length)
+                ) else { break }
+
+                let lineIndent = lineSource.substring(with: match.range(at: 1))
+                let lineDepth = TranscriptFormatter.listIndentLevel(of: lineIndent)
+                if lineDepth < depth { break }
+                if lineDepth == depth {
+                    let marker = lineSource.substring(with: match.range(at: 2))
+                    guard let ordered = OrderedMarker(marker),
+                          ordered.delimiter == expected.delimiter,
+                          ordered.number == expected.number,
+                          let shifted = ordered.next
+                    else { break }
+                    replacements.append((
+                        absoluteRange(match.range(at: 2), in: contentRange),
+                        shifted.text
+                    ))
+                    expected = shifted
+                }
+
+                let fullLine = source.lineRange(for: contentRange)
+                scanEnd = NSMaxRange(fullLine)
+                guard scanEnd > cursor else { break }
+                cursor = scanEnd
+            }
+
+            guard !replacements.isEmpty, scanEnd > fromFullLineEnd else { return nil }
+            let tailRange = NSRange(
+                location: fromFullLineEnd,
+                length: scanEnd - fromFullLineEnd
+            )
+            let tail = NSMutableString(string: source.substring(with: tailRange))
+            for replacement in replacements.reversed() {
+                tail.replaceCharacters(
+                    in: NSRange(
+                        location: replacement.range.location - fromFullLineEnd,
+                        length: replacement.range.length
+                    ),
+                    with: replacement.marker
+                )
+            }
+            return (tailRange, tail as String)
         }
 
         private static func contentLineRange(containing location: Int, in source: NSString) -> NSRange {
@@ -728,15 +1106,60 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             return range
         }
 
-        private static let headingRegex = try! NSRegularExpression(pattern: "^(#{1,6})(\\s*)")
-        private static let listRegex = try! NSRegularExpression(pattern: "^(\\s*)([-*]|\\d+[.])(\\s+)")
-        // Emphasis must flank non-whitespace (CommonMark-style), mirroring
-        // MeetingExporter's bold-italic/bold/italic grammar — keep the two in
-        // lockstep so what styles as bold here exports as bold to Apple Notes/Bear.
-        // `***` is matched before `**` (see `inlineSyntaxMatches`) so a bold-italic
-        // fence isn't half-eaten by the bold pass.
-        private static let boldItalicRegex = try! NSRegularExpression(pattern: "(\\*\\*\\*)(?=\\S)([^*\\n]+?)(?<=\\S)(\\*\\*\\*)")
-        private static let boldRegex = try! NSRegularExpression(pattern: "(\\*\\*)(?=\\S)([^*\\n]+?)(?<=\\S)(\\*\\*)")
-        private static let italicRegex = try! NSRegularExpression(pattern: "(?<!\\*)(\\*)(?=\\S)([^*\\n]+?)(?<=\\S)(\\*)(?!\\*)")
+        // ATX headings require a space after the fence (or an empty heading), so a
+        // meeting note such as `#123` remains ordinary text.
+        private static let headingRegex = try! NSRegularExpression(pattern: "^(#{1,6})([ \\t]+|$)")
+        // Keep block/list grammar aligned with MeetingExporter: three unordered
+        // markers, both ordered delimiters, and optional task syntax. Digits are
+        // ASCII-only ([0-9], not \d) so everything the grammar admits as ordered
+        // is also something `OrderedMarker` can classify — ICU \d matches Unicode
+        // digits that Int() can't parse, which used to hide the typed number
+        // behind a drawn bullet.
+        private static let listRegex = try! NSRegularExpression(
+            pattern: "^(\\s*)([-+*]|[0-9]+[.)])(\\s+)(?:(\\[[ xX]\\])(\\s+))?"
+        )
+        private static let listMarkerOnlyRegex = try! NSRegularExpression(
+            pattern: "^(\\s*)([-+*]|[0-9]+[.)])$"
+        )
+
+        /// Whether a listRegex marker is digit-shaped ("3." / "3)") as opposed to
+        /// a bullet ("-", "+", "*"). Rendering routes on the shape; arithmetic
+        /// (resume, continuation, renumbering) additionally needs the number to
+        /// parse — that's `OrderedMarker`.
+        private static func isOrderedMarkerShape(_ marker: String) -> Bool {
+            marker.last == "." || marker.last == ")"
+        }
+
+        /// A parsed ordered-list marker. The single home of the number/delimiter
+        /// grammar and the +1 rule shared by marker resume, Enter continuation,
+        /// and follower renumbering — and the overflow guard that keeps a
+        /// pathological `9223372036854775807.` marker from trapping `+ 1`.
+        private struct OrderedMarker {
+            let number: Int
+            let delimiter: Character
+
+            init?(_ marker: String) {
+                guard let last = marker.last, last == "." || last == ")",
+                      let number = Int(marker.dropLast())
+                else { return nil }
+                self.number = number
+                self.delimiter = last
+            }
+
+            private init(number: Int, delimiter: Character) {
+                self.number = number
+                self.delimiter = delimiter
+            }
+
+            /// The marker one past this one, or nil when the number would
+            /// overflow Int — callers fall back to repeating the marker or
+            /// ending the renumber run, never crash.
+            var next: OrderedMarker? {
+                let (value, overflow) = number.addingReportingOverflow(1)
+                return overflow ? nil : OrderedMarker(number: value, delimiter: delimiter)
+            }
+
+            var text: String { "\(number)\(delimiter)" }
+        }
     }
 }

@@ -223,13 +223,11 @@ enum MeetingExporter {
     }
 
     /// Render the transcript body Markdown (front-matter already stripped) to a
-    /// single line of HTML for Apple Notes. Handles the exact grammar Serial Notes
-    /// emits: `#`/`##` headings, `-`/`*` bullets, `1.` ordered items, `- [ ]`/
-    /// `- [x]` task items — all nestable by indentation — and `***bold-italic***`/
-    /// `**bold**`/`*italic*` inline, including both inline and block-form speaker
-    /// entries (each non-empty line becomes its own paragraph). Blank lines in the
-    /// source become explicit empty lines — Notes gives `<p>` no margin, so without
-    /// them the whole note collapses into a wall of text.
+    /// single line of HTML for Apple Notes. Handles the same focused grammar as the
+    /// notepad: ATX headings, `-`/`+`/`*` bullets, `1.`/`1)` ordered items, task
+    /// items, nesting by indentation, and the shared inline parser. Blank lines in
+    /// the source become explicit empty lines — Notes gives `<p>` no margin, so
+    /// without them the whole note collapses into a wall of text.
     static func htmlBody(fromMarkdown markdown: String) -> String {
         var html = ""
         // Open lists as (tag, indent level), innermost last. An `<li>` stays open
@@ -291,27 +289,46 @@ enum MeetingExporter {
             let level = TranscriptFormatter.listIndentLevel(
                 of: rawLine.prefix(while: { $0 == " " || $0 == "\t" })
             )
-            if line.hasPrefix("## ") {
-                closeAllLists()
-                html += "<h2>\(inlineHTML(String(line.dropFirst(3))))</h2>"
-            } else if line.hasPrefix("# ") {
-                closeAllLists()
-                html += "<h1>\(inlineHTML(String(line.dropFirst(2))))</h1>"
-            } else if line.hasPrefix("- [ ] ") {
-                appendListItem("ul", level: level, content: "\u{2610} \(inlineHTML(String(line.dropFirst(6))))")
-            } else if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-                appendListItem("ul", level: level, content: "\u{2611}\u{FE0E} \(inlineHTML(String(line.dropFirst(6))))")
-            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                appendListItem("ul", level: level, content: inlineHTML(String(line.dropFirst(2))))
-            } else if let marker = orderedItemRegex.firstMatch(
+            if let heading = headingRegex.firstMatch(
                 in: line,
                 range: NSRange(location: 0, length: (line as NSString).length)
             ) {
-                appendListItem(
-                    "ol",
-                    level: level,
-                    content: inlineHTML((line as NSString).substring(from: marker.range.length))
-                )
+                closeAllLists()
+                let lineSource = line as NSString
+                let fence = lineSource.substring(with: heading.range(at: 1))
+                let content = heading.range(at: 2).location == NSNotFound
+                    ? ""
+                    : lineSource.substring(with: heading.range(at: 2))
+                html += "<h\(fence.count)>\(inlineHTML(content))</h\(fence.count)>"
+            } else if let item = listItemRegex.firstMatch(
+                in: line,
+                range: NSRange(location: 0, length: (line as NSString).length)
+            ) {
+                let lineSource = line as NSString
+                let marker = lineSource.substring(with: item.range(at: 1))
+                let ordered = marker.hasSuffix(".") || marker.hasSuffix(")")
+                let taskMatched = item.range(at: 3).location != NSNotFound
+                if taskMatched, !ordered {
+                    let task = lineSource.substring(with: item.range(at: 3))
+                    let glyph = task.lowercased() == "x" ? "\u{2611}\u{FE0E} " : "\u{2610} "
+                    appendListItem(
+                        "ul",
+                        level: level,
+                        content: glyph + inlineHTML(lineSource.substring(from: item.range.length))
+                    )
+                } else {
+                    // Ordered "tasks" aren't part of the grammar — the notepad
+                    // renders their brackets literally, so the export keeps them
+                    // as content too.
+                    let contentStart = taskMatched
+                        ? NSMaxRange(item.range(at: 2))
+                        : item.range.length
+                    appendListItem(
+                        ordered ? "ol" : "ul",
+                        level: level,
+                        content: inlineHTML(lineSource.substring(from: contentStart))
+                    )
+                }
             } else {
                 closeAllLists()
                 html += "<p>\(inlineHTML(line))</p>"
@@ -321,51 +338,18 @@ enum MeetingExporter {
         return html
     }
 
-    /// HTML-escape, then convert `**bold**` / `*italic*` to tags.
+    /// Render the notepad's shared inline grammar to safe HTML.
     static func inlineHTML(_ text: String) -> String {
-        let escaped = text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-        return convertEmphasis(escaped)
+        MarkdownInlineParser.html(from: text)
     }
 
-    // Flank rules mirror ManualNotesMarkdownEditor's bold/italic grammar — keep
-    // them in lockstep so what styles in the notepad exports the same way.
-    //
-    // An emphasis span must be balanced and flank non-whitespace (CommonMark-style),
-    // and `**` is matched before `*`. This is what keeps a stray `**` in transcript
-    // text (e.g. "C++ uses ** for pointers", Python "**kwargs") from shredding the
-    // bold speaker label / action-item owner on the same line, and stops a pair of
-    // space-flanked literal asterisks from becoming a spurious italic run. A stray
-    // marker that isn't part of a balanced, tight span is left as literal text.
-    //
-    // The italic span excludes `<`/`>` so it can't reach across a `<b>`/`</b>` tag
-    // the bold pass already emitted (which would cross tags on a single `*`
-    // straddling a `**` boundary). User content can't contain a literal `<`/`>`
-    // here — inlineHTML escapes those to `&lt;`/`&gt;` first — so only our own tags
-    // carry real angle brackets, and a pathological run degrades to literal `*`
-    // rather than malformed HTML.
-    //
-    // `***bold-italic***` runs first (tight span, mirroring the editor's
-    // `boldItalicRegex`) so the bold pass can't eat the inside of a `***` fence
-    // and strand literal asterisks.
-    private static let boldItalicRegex = try! NSRegularExpression(pattern: #"\*\*\*(?=\S)([^*<>]+?)(?<=\S)\*\*\*"#)
-    private static let boldRegex = try! NSRegularExpression(pattern: #"\*\*(?=\S)(.+?)(?<=\S)\*\*"#)
-    private static let italicRegex = try! NSRegularExpression(pattern: #"(?<!\*)\*(?!\*)(?=\S)([^*<>]+?)(?<=\S)\*(?!\*)"#)
-    private static let orderedItemRegex = try! NSRegularExpression(pattern: #"^\d+\.\s+"#)
-
-    private static func convertEmphasis(_ text: String) -> String {
-        let boldItalicized = regexReplace(boldItalicRegex, in: text, template: "<b><i>$1</i></b>")
-        let bolded = regexReplace(boldRegex, in: boldItalicized, template: "<b>$1</b>")
-        return regexReplace(italicRegex, in: bolded, template: "<i>$1</i>")
-    }
-
-    private static func regexReplace(_ regex: NSRegularExpression, in text: String, template: String) -> String {
-        regex.stringByReplacingMatches(
-            in: text,
-            range: NSRange(text.startIndex..., in: text),
-            withTemplate: template
-        )
-    }
+    private static let headingRegex = try! NSRegularExpression(
+        pattern: #"^(#{1,6})(?:[ \t]+(.*)|$)"#
+    )
+    // Digits are ASCII-only and the task box may sit at end of line (an empty
+    // task item is "- [ ]" once the line is trimmed) — keep in lockstep with
+    // ManualNotesMarkdownEditor's listRegex.
+    private static let listItemRegex = try! NSRegularExpression(
+        pattern: #"^([-+*]|[0-9]+[.)])(\s+)(?:\[([ xX])\](\s+|$))?"#
+    )
 }

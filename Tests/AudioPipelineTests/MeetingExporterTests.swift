@@ -117,6 +117,20 @@ struct MeetingExporterTests {
         #expect(html == "<ol><li>first</li><li>second</li></ol><div><br></div><ul><li>parent<ol><li>step</li></ol></li></ul>")
     }
 
+    @Test("Plus bullets, parenthesized orders, and every task bullet share list rendering")
+    func additionalPracticalListMarkers() {
+        let html = MeetingExporter.htmlBody(
+            fromMarkdown: "+ plus\n* [ ] open\n- [X] done\n\n1) first\n2) second"
+        )
+        #expect(html == "<ul><li>plus</li><li>☐ open</li><li>☑︎ done</li></ul><div><br></div><ol><li>first</li><li>second</li></ol>")
+    }
+
+    @Test("All six headings require whitespace after their fence")
+    func headingGrammar() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "### Detail\n#123 issue")
+        #expect(html == "<h3>Detail</h3><p>#123 issue</p>")
+    }
+
     @Test("A list-type switch at the same level closes the previous list")
     func listTypeSwitch() {
         let html = MeetingExporter.htmlBody(fromMarkdown: "* bullet\n1. number")
@@ -139,6 +153,58 @@ struct MeetingExporterTests {
     @Test("Converts balanced bold and italic markers")
     func convertsEmphasis() {
         #expect(MeetingExporter.inlineHTML("**bold** and *italic*") == "<b>bold</b> and <i>italic</i>")
+    }
+
+    @Test("Renders notepad inline syntax and escaped punctuation")
+    func practicalInlineMarkdown() {
+        let markdown = "__bold__ _italic_ ~~done~~ ==key== `a < b` [site](https://example.com?a=1&b=2) \\*literal\\*"
+        let html = MeetingExporter.inlineHTML(markdown)
+        #expect(html == "<b>bold</b> <i>italic</i> <s>done</s> <mark>key</mark> <code>a &lt; b</code> <a href=\"https://example.com?a=1&amp;b=2\">site</a> *literal*")
+    }
+
+    @Test("Intraword underscores and unsupported extensions stay literal")
+    func unsupportedMarkdownStaysLiteral() {
+        let markdown = "snake_case [[Meeting]] $math$ #tag ![image](photo.png)"
+        #expect(MeetingExporter.inlineHTML(markdown) == markdown)
+    }
+
+    @Test("Intraword strike and highlight fences stay literal")
+    func intrawordStrikeAndHighlightStayLiteral() {
+        #expect(MeetingExporter.inlineHTML("check flag==true==done") == "check flag==true==done")
+        #expect(MeetingExporter.inlineHTML("x~~y~~z") == "x~~y~~z")
+        // Space-flanked fences still work.
+        #expect(MeetingExporter.inlineHTML("a ==b== c") == "a <mark>b</mark> c")
+    }
+
+    @Test("Link destinations balance parentheses and keep titles out of scope")
+    func parenthesizedLinkDestinations() {
+        #expect(
+            MeetingExporter.inlineHTML("[Swift](https://en.wikipedia.org/wiki/Swift_(programming_language))")
+                == "<a href=\"https://en.wikipedia.org/wiki/Swift_(programming_language)\">Swift</a>"
+        )
+    }
+
+    @Test("Script-scheme link destinations stay literal")
+    func scriptSchemeLinksStayLiteral() {
+        let javascript = "[click](javascript:alert(1))"
+        #expect(MeetingExporter.inlineHTML(javascript) == javascript)
+        let data = "[page](data:text/html,x)"
+        #expect(MeetingExporter.inlineHTML(data) == data)
+        // An escaped colon can't smuggle a scheme past the check — no anchor is
+        // emitted (the `\:` still renders as a normal escape in the literal text).
+        let escaped = "[click](javascript\\:alert(1))"
+        #expect(MeetingExporter.inlineHTML(escaped) == "[click](javascript:alert(1))")
+    }
+
+    @Test("Empty task items keep their checkbox; ordered task syntax stays literal")
+    func taskGrammarEdges() {
+        let html = MeetingExporter.htmlBody(fromMarkdown: "- [ ] \n1. [ ] todo")
+        #expect(html == "<ul><li>☐ </li></ul><ol><li>[ ] todo</li></ol>")
+    }
+
+    @Test("Non-ASCII digit markers export as ordinary paragraphs")
+    func unicodeDigitMarkersStayParagraphs() {
+        #expect(MeetingExporter.htmlBody(fromMarkdown: "٣. item") == "<p>٣. item</p>")
     }
 
     @Test("Leaves an unbalanced single marker as literal text")

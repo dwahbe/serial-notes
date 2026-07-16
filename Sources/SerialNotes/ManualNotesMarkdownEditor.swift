@@ -37,7 +37,8 @@ final class ManualNotesTextView: NSTextView {
 
     private func drawRenderedBullets() {
         guard !renderedBullets.isEmpty,
-              let layoutManager
+              let layoutManager,
+              let textContainer
         else {
             return
         }
@@ -48,6 +49,7 @@ final class ManualNotesTextView: NSTextView {
         ]
         let origin = textContainerOrigin
         let indentStep = ManualNotesMarkdownEditor.Coordinator.listIndentStep
+        let gutterInset = ManualNotesMarkdownEditor.Coordinator.listMarkerGutterInset
 
         for rendered in renderedBullets where rendered.lineRange.location < string.utf16.count {
             let bullet = rendered.kind.glyph as NSString
@@ -63,9 +65,12 @@ final class ManualNotesTextView: NSTextView {
                 effectiveRange: nil
             )
             // Each bullet sits inside its own level's gutter, just left of where
-            // that level's text begins.
+            // that level's text begins. The line-fragment padding is what offsets
+            // paragraph-indented text, so it's added here too — a drawn bullet and
+            // an ordered item's indented number share one axis.
             let point = NSPoint(
-                x: origin.x + lineRect.minX + CGFloat(rendered.indentLevel) * indentStep + 2,
+                x: origin.x + lineRect.minX + textContainer.lineFragmentPadding
+                    + CGFloat(rendered.indentLevel) * indentStep + gutterInset,
                 y: origin.y + lineRect.minY + max(0, (lineRect.height - bulletSize.height) / 2) - 1
             )
             bullet.draw(at: point, withAttributes: attributes)
@@ -698,10 +703,11 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                     let level = TranscriptFormatter.listIndentLevel(
                         of: lineSource.substring(with: listMatch.range(at: 1))
                     )
+                    let ordered = Self.isOrderedMarkerShape(marker)
                     storage.addAttributes(
                         [
                             .font: NSFont.systemFont(ofSize: 15),
-                            .paragraphStyle: Self.listParagraphStyle(indentLevel: level)
+                            .paragraphStyle: Self.listParagraphStyle(indentLevel: level, ordered: ordered)
                         ],
                         range: lineRange
                     )
@@ -709,7 +715,7 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                     // glyphs are hidden with the marker (visible tabs would jump to
                     // unrelated tab stops and break the per-level columns).
                     Self.hideSyntax(indentRange, storage: storage)
-                    if Self.isOrderedMarkerShape(marker) {
+                    if ordered {
                         // Ordered item: the number itself is the visible marker.
                         return nil
                     }
@@ -850,15 +856,24 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
         }
 
         /// Horizontal advance per list nesting level. Text at level N starts at
-        /// `(N + 1) * step`; that level's bullet is drawn inside the `N * step`
+        /// `(N + 1) * step`; that level's marker sits inside the `N * step`
         /// gutter (see `drawRenderedBullets`).
         nonisolated static let listIndentStep: CGFloat = 18
+        /// Where a marker starts within its level's gutter — shared by the drawn
+        /// bullet/task glyphs and an ordered item's visible number, so both
+        /// marker kinds sit on one vertical axis.
+        nonisolated static let listMarkerGutterInset: CGFloat = 2
 
-        private static func listParagraphStyle(indentLevel: Int) -> NSParagraphStyle {
+        private static func listParagraphStyle(indentLevel: Int, ordered: Bool) -> NSParagraphStyle {
             let style = NSMutableParagraphStyle()
             style.paragraphSpacing = 6
             let indent = CGFloat(indentLevel + 1) * listIndentStep
-            style.firstLineHeadIndent = indent
+            // An ordered item's number is its visible marker, so its first line
+            // starts back in the gutter where bullets are drawn; wrapped lines
+            // still align with the content column.
+            style.firstLineHeadIndent = ordered
+                ? CGFloat(indentLevel) * listIndentStep + listMarkerGutterInset
+                : indent
             style.headIndent = indent
             // A tab's width comes from tab stops, not its font — a leading "\t"
             // hidden at 0.1pt would still jump to the next 28pt default stop and

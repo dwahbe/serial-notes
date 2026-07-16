@@ -199,6 +199,32 @@ struct ManualNotesMarkdownEditorTests {
         #expect(markerFontSize(at: bulletLine, in: textView) < 1)
     }
 
+    @Test("Ordered numbers sit on the drawn-bullet axis, per level")
+    func orderedMarkerSharesBulletAxis() throws {
+        let content = "1. first\n\t2. nested\n* bullet"
+        let (textView, _) = makeEditor(content)
+        textView.textContainer?.containerSize = NSSize(width: 400, height: 1000)
+        let layoutManager = try #require(textView.layoutManager)
+        let container = try #require(textView.textContainer)
+        layoutManager.ensureLayout(for: container)
+
+        let source = content as NSString
+        func markerX(of text: String) -> CGFloat {
+            let glyph = layoutManager.glyphIndexForCharacter(at: source.range(of: text).location)
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            return layoutManager.location(forGlyphAt: glyph).x - lineRect.minX
+        }
+
+        let step = ManualNotesMarkdownEditor.Coordinator.listIndentStep
+        let inset = ManualNotesMarkdownEditor.Coordinator.listMarkerGutterInset
+        let padding = container.lineFragmentPadding
+        // drawRenderedBullets places each bullet at `padding + level * step +
+        // inset` within its line fragment; the visible numbers must land on the
+        // same axis (±1pt for hidden-glyph residue).
+        #expect(abs(markerX(of: "1.") - (padding + inset)) < 1)
+        #expect(abs(markerX(of: "2.") - (padding + step + inset)) < 1)
+    }
+
     @Test("Enter on an ordered item continues with the next number")
     func orderedContinuationIncrements() throws {
         let content = "3. third"

@@ -10,7 +10,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.13.6"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "3.0.1"),
+        // Vendored with a patched resource-bundle accessor (production Settings
+        // crash — see Vendor/KeyboardShortcuts/VENDORED.md).
+        .package(path: "Vendor/KeyboardShortcuts"),
     ],
     targets: [
         .target(

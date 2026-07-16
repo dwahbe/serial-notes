@@ -39,15 +39,31 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 
-# SwiftPM resource bundles (e.g. KeyboardShortcuts' localizations). Bundle.module
-# fatalErrors at runtime if a package's bundle is missing from Contents/Resources,
-# so copy every generated *.bundle. Resource-only bundles carry no code and are
-# sealed by the outer app signature; a bundle that ever gains an executable would
-# need its own inside-out codesign step like Sparkle below.
+# SwiftPM resource bundles (e.g. KeyboardShortcuts' localizations), copied into
+# Contents/Resources — the only location code signing allows. Stock SwiftPM
+# Bundle.module accessors never look there (only the .app root and the build
+# machine's absolute .build path), so this copy alone is NOT enough: the owning
+# package must be vendored with a patched accessor that prefers
+# Bundle.main.resourceURL (see Vendor/KeyboardShortcuts/VENDORED.md — dev
+# machines mask the crash because the .build fallback path exists locally; this
+# shipped the v0.2.3/v0.2.4 Settings crash). The allowlist below fails the wrap
+# when a new resource-bearing package appears without that patch.
+# Resource-only bundles carry no code and are sealed by the outer app signature;
+# a bundle that ever gains an executable would need its own inside-out codesign
+# step like Sparkle below.
+PATCHED_RESOURCE_BUNDLES=("KeyboardShortcuts_KeyboardShortcuts.bundle")
 for RESOURCE_BUNDLE in "$ROOT/.build/$CONFIG"/*.bundle; do
     [[ -d "$RESOURCE_BUNDLE" ]] || continue
-    echo "==> bundling $(basename "$RESOURCE_BUNDLE")"
-    ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+    BUNDLE_NAME="$(basename "$RESOURCE_BUNDLE")"
+    if [[ ! " ${PATCHED_RESOURCE_BUNDLES[*]} " == *" $BUNDLE_NAME "* ]]; then
+        echo "error: $BUNDLE_NAME belongs to a package whose stock Bundle.module accessor" >&2
+        echo "cannot find it in a wrapped .app — it would fatalError on user machines while" >&2
+        echo "working on this one. Vendor the package with a patched accessor (see" >&2
+        echo "Vendor/KeyboardShortcuts/VENDORED.md), then add it to PATCHED_RESOURCE_BUNDLES." >&2
+        exit 1
+    fi
+    echo "==> bundling $BUNDLE_NAME"
+    ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$BUNDLE_NAME"
 done
 
 # App icon (CFBundleIconFile=AppIcon in Info.plist). Regenerate the .icns from

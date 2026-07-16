@@ -6,9 +6,15 @@ import Analytics from "@vercel/analytics/astro";
 interface Props {
   title?: string;
   description?: string;
+  /**
+   * Opt out of the Vercel Analytics beacon. The Notion OAuth callback pages
+   * set this: their URLs carry one-shot authorization codes, and page-view
+   * beacons must never see them.
+   */
+  analytics?: boolean;
 }
 
-const { title = SITE.title, description = SITE.description } = Astro.props;
+const { title = SITE.title, description = SITE.description, analytics = true } = Astro.props;
 
 const siteOrigin = Astro.site ?? SITE.url;
 
@@ -52,7 +58,7 @@ const jsonLd = {
         "Automatic meeting detection for Zoom, Teams, FaceTime, Slack, and more",
         "On-device transcription with speaker labels",
         "AI summaries and action items via Apple Intelligence",
-        "Markdown export readable by Notion, Apple Notes, Obsidian, and any editor",
+        "Markdown export readable by Obsidian and any editor, with direct send to Notion, Apple Notes, and Bear",
         "Works fully offline after a one-time setup",
         "No account, no cloud, no bot joining calls",
       ],
@@ -118,6 +124,6 @@ const jsonLd = {
   </head>
   <body class="min-h-screen antialiased">
     <slot />
-    <Analytics />
+    {analytics && <Analytics />}
   </body>
 </html>

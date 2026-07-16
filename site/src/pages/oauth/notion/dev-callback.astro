@@ -1,0 +1,10 @@
+---
+import NotionCallbackPage from "../../../components/NotionCallbackPage.astro";
+
+// Dev-flavor OAuth callback — registered byte-exact in Notion's developer
+// portal. Identical to callback.astro but bounces into the dev build's scheme
+// (serialnotes-dev://), so a ./scripts/run.sh build can complete OAuth without
+// colliding with an installed production app.
+---
+
+<NotionCallbackPage scheme="serialnotes-dev" />

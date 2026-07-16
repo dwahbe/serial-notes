@@ -1,0 +1,9 @@
+---
+import NotionCallbackPage from "../../../components/NotionCallbackPage.astro";
+
+// Production OAuth callback — registered byte-exact in Notion's developer
+// portal. Static page; the inline JS in NotionCallbackPage bounces the query
+// string into the production app (serialnotes://).
+---
+
+<NotionCallbackPage scheme="serialnotes" />

@@ -1,0 +1,147 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+// Shared body for the two Notion OAuth callback pages (prod + dev flavor).
+// Prerendered static HTML: Notion redirects here with ?code&state (or ?error),
+// and inline JS immediately bounces the untouched query string into the app via
+// its custom URL scheme — including error exits, so the app can reset an
+// in-flight connect attempt. The page itself never talks to any server.
+interface Props {
+  /** Custom URL scheme of the app flavor this page bounces into. */
+  scheme: "serialnotes" | "serialnotes-dev";
+}
+const { scheme } = Astro.props;
+---
+
+<Layout
+  title="Connecting Notion — Serial Notes"
+  description="Completing the Notion connection for Serial Notes."
+  analytics={false}
+>
+  <meta name="robots" content="noindex" slot="head" />
+
+  <main class="relative mx-auto max-w-6xl [box-shadow:inset_1px_0_0_0_var(--color-line),1px_0_0_0_var(--color-line)]">
+    <section
+      class="flex min-h-[70vh] flex-col items-center justify-center px-5 py-24 text-center sm:px-8"
+      data-scheme={scheme}
+      id="callback"
+    >
+      <noscript>
+        <p class="max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+          JavaScript is required to hand this connection back to Serial Notes.
+          Enable it and reload, or restart the connection from the app.
+        </p>
+      </noscript>
+
+      <div id="ok" hidden>
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">Notion connected</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          Back to Serial Notes
+        </h1>
+        <p class="mx-auto mt-5 max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+          Finishing the connection in the app — you can close this tab.
+        </p>
+        <a
+          data-open-app
+          href="#"
+          class="mt-8 inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-medium text-white transition-transform hover:-translate-y-0.5 hover:bg-ink-soft"
+        >
+          Open Serial Notes
+        </a>
+        <p class="mx-auto mt-4 max-w-md text-[14px] leading-relaxed text-faint">
+          If the app didn't open automatically, use the button above.
+        </p>
+      </div>
+
+      <div id="denied" hidden>
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">Connection canceled</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          Nothing was connected
+        </h1>
+        <p class="mx-auto mt-5 max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+          No access was granted. You can close this tab, and try again from
+          Serial Notes whenever you like.
+        </p>
+        <!-- Some browsers block the automatic hand-off to the app without a
+             click; the button lets Serial Notes learn the flow ended either way. -->
+        <a
+          data-open-app
+          href="#"
+          class="mt-8 inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-medium text-white transition-transform hover:-translate-y-0.5 hover:bg-ink-soft"
+        >
+          Open Serial Notes
+        </a>
+      </div>
+
+      <div id="failed" hidden>
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">Connection failed</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          That didn't work
+        </h1>
+        <p class="mx-auto mt-5 max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+          Notion reported a problem completing the connection. You can close
+          this tab and try again from Serial Notes.
+        </p>
+        <a
+          data-open-app
+          href="#"
+          class="mt-8 inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-medium text-white transition-transform hover:-translate-y-0.5 hover:bg-ink-soft"
+        >
+          Open Serial Notes
+        </a>
+      </div>
+
+      <div id="direct" hidden>
+        <p class="font-mono text-[12px] uppercase tracking-[0.18em] text-faint">Nothing to finish</p>
+        <h1 class="tracking-tightest mt-3 text-balance text-4xl font-semibold leading-[1.05] text-ink sm:text-5xl">
+          This page completes a Notion connection
+        </h1>
+        <p class="mx-auto mt-5 max-w-md text-pretty text-[17px] leading-relaxed text-muted">
+          It only does something when Notion sends you here. Start from
+          Serial Notes → Settings → Connect Notion.
+        </p>
+        <a
+          href="/"
+          class="mt-8 inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-medium text-white transition-transform hover:-translate-y-0.5 hover:bg-ink-soft"
+        >
+          Back to the homepage
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <script is:inline>
+    (() => {
+      const scheme = document.getElementById("callback").dataset.scheme;
+      const params = new URLSearchParams(location.search);
+      // The query carries a one-shot authorization code. Scrub it from the
+      // address bar + history NOW — this inline script runs before any other
+      // (the analytics beacon is also disabled for this page, but nothing
+      // later, extensions included, should ever see the code in the URL).
+      if (location.search) {
+        history.replaceState(null, "", location.pathname);
+      }
+      const show = (id) => (document.getElementById(id).hidden = false);
+
+      if (!params.has("code") && !params.has("error")) {
+        show("direct");
+        return;
+      }
+      // Bounce every exit — success and error alike — so the app can verify
+      // state, exchange the code, or tear down the in-flight attempt. Every
+      // visible panel also carries a manual open-app button: some browsers
+      // block a gesture-less custom-scheme navigation, and without the button
+      // the app would wait on a bounce that never arrives.
+      const target = `${scheme}://oauth/notion?${params.toString()}`;
+      for (const link of document.querySelectorAll("[data-open-app]")) {
+        link.href = target;
+      }
+      if (params.has("error")) {
+        show(params.get("error") === "access_denied" ? "denied" : "failed");
+      } else {
+        show("ok");
+      }
+      location.replace(target);
+    })();
+  </script>
+</Layout>

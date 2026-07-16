@@ -6,21 +6,13 @@
 // silhouette marks (Notion, Obsidian, Bear) against the filled app-icon tiles
 // (Apple Notes, Logseq). Logos live in /public/logos.
 // `h` is the mobile height; `hLg` scales each mark up ~1.4x on desktop (sm and
-// above), where the strip has more room to breathe. `soon: true` marks an app
-// not yet supported (Notion, kept last): the (decorative, aria-hidden) logo is
-// dimmed and the name gets a small inline "Coming soon" pill. The pill is
-// inline (inside the name span, not a flex sibling or a floating absolute
-// badge) so it reads as one phrase bound to the app and can't detach from it or
-// overlap the wrapped "+ anything" line on mobile. Only the logo is dimmed —
-// not the name or pill — so both keep AA contrast (a 50%-opacity name or pill
-// composites to ~2:1 on white, which fails); the pill's text-muted on bg-line
-// is ~5.4:1.
+// above), where the strip has more room to breathe.
 const apps = [
   { name: "Apple Notes", file: "apple-notes", h: 30, hLg: 42 },
   { name: "Obsidian", file: "obsidian", h: 32, hLg: 45 },
   { name: "Bear", file: "bear", h: 31, hLg: 43 },
   { name: "Logseq", file: "logseq", h: 30, hLg: 42 },
-  { name: "Notion", file: "notion", h: 27, hLg: 38, soon: true },
+  { name: "Notion", file: "notion", h: 27, hLg: 38 },
 ];
 ---
 
@@ -32,7 +24,7 @@ const apps = [
 
     <div class="mt-8 flex flex-wrap items-center justify-center gap-x-9 gap-y-6 sm:gap-x-12">
       {
-        apps.map(({ name, file, h, hLg, soon }) => (
+        apps.map(({ name, file, h, hLg }) => (
           <div class="group flex items-center gap-2.5">
             <img
               src={`/logos/${file}.svg`}
@@ -40,15 +32,10 @@ const apps = [
               aria-hidden="true"
               decoding="async"
               style={`--h:${h}px;--h-lg:${hLg}px`}
-              class={`logo-mark w-auto ${soon ? "opacity-50" : ""}`}
+              class="logo-mark w-auto"
             />
             <span class="text-[15px] font-medium text-faint transition-colors group-hover:text-ink">
               {name}
-              {soon && (
-                <span class="ml-2 inline-block whitespace-nowrap rounded-full bg-line px-2.5 py-[3px] align-[1px] text-[11px] font-semibold uppercase tracking-wide text-muted">
-                  Coming soon
-                </span>
-              )}
             </span>
           </div>
         ))

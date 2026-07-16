@@ -3,7 +3,7 @@ export const SITE = {
   name: "Serial Notes",
   title: "Serial Notes — Free, private meeting transcription for Mac",
   description:
-    "A menu bar app for macOS that captures your meetings, transcribes them on-device, and exports clean Markdown — ready for Notion, Apple Notes, and Obsidian.",
+    "A menu bar app for macOS that captures your meetings, transcribes them on-device, and exports clean Markdown — sent straight to Notion and Apple Notes, ready for Obsidian.",
   url: "https://serialnotes.app",
 
   // Links

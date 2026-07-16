@@ -11,7 +11,8 @@ import Foundation
 ///   - **folder apps** (Obsidian, Logseq) read a folder of `.md` directly, so the
 ///     notes folder lives *inside* the vault/graph and shows up in the app;
 ///   - **import apps** (Apple Notes, Notion, Bear) keep notes in a private
-///     database, so notes go to a synced folder and the user imports the Markdown.
+///     database — for these the tile enables direct send (`pushTarget`) where
+///     one exists; a plain folder pick means manual import.
 struct NotesDestination: Identifiable {
     enum Kind {
         case folderApp  // Obsidian, Logseq — notes land inside the vault/graph
@@ -25,15 +26,14 @@ struct NotesDestination: Identifiable {
     /// Bundle IDs probed in order; the first installed one supplies the icon and,
     /// for folder apps, the vault search. Empty for non-app destinations.
     var bundleIDs: [String] = []
-    /// SF Symbol used for non-app destinations (locations).
+    /// SF Symbol used for non-app destinations (locations) — and as the icon
+    /// fallback for a destination that isn't installed-gated (Notion is a web
+    /// integration, offered even when its desktop app is absent).
     var symbol: String?
-    /// When set, this tile *pushes notes straight into the app* after each meeting
-    /// (Phase 2) instead of writing to a folder — see `MeetingExporter`. Only Apple
-    /// Notes and Bear can receive a note programmatically and locally.
+    /// When set, this tile *pushes notes straight into the destination* after each
+    /// meeting instead of writing to a folder — Apple Notes and Bear locally (see
+    /// `MeetingExporter`), Notion via its API over the user's OAuth connection.
     var pushTarget: ExportTarget?
-    /// Shown as a disabled "Coming soon" teaser rather than a working destination —
-    /// e.g. Notion, whose direct integration needs the OAuth work in Phase 3.
-    var comingSoon: Bool = false
 }
 
 // MARK: - Catalog
@@ -47,7 +47,7 @@ extension NotesDestination {
     static let knownApps: [NotesDestination] = [
         NotesDestination(id: "apple-notes", name: "Apple Notes", kind: .importApp, bundleIDs: ExportTarget.appleNotes.bundleIDs, pushTarget: .appleNotes),
         NotesDestination(id: "obsidian", name: "Obsidian", kind: .folderApp, bundleIDs: ["md.obsidian"]),
-        NotesDestination(id: "notion", name: "Notion", kind: .importApp, bundleIDs: ["notion.id"], comingSoon: true),
+        NotesDestination(id: "notion", name: "Notion", kind: .importApp, bundleIDs: ExportTarget.notion.bundleIDs, symbol: "n.square", pushTarget: .notion),
         NotesDestination(id: "bear", name: "Bear", kind: .importApp, bundleIDs: ExportTarget.bear.bundleIDs, pushTarget: .bear),
         NotesDestination(id: "logseq", name: "Logseq", kind: .folderApp, bundleIDs: ["com.logseq.logseq", "com.electron.logseq"]),
     ]
@@ -62,10 +62,12 @@ extension NotesDestination {
         return out
     }
 
-    /// Apps the user actually has installed, with Apple Notes always present.
-    /// Built once per render of the storage step.
+    /// Apps the user actually has installed, with Apple Notes always present
+    /// (ships with macOS) and Notion always offered (a web-service integration
+    /// — the connection, not the desktop app, is what matters). Built once per
+    /// render of the storage step.
     static var availableApps: [NotesDestination] {
-        knownApps.filter { $0.id == "apple-notes" || $0.installedAppURL != nil }
+        knownApps.filter { $0.id == "apple-notes" || $0.id == "notion" || $0.installedAppURL != nil }
     }
 
     /// First installed bundle URL among `bundleIDs`, or nil.

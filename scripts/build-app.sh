@@ -96,6 +96,10 @@ if [[ "${SIGN_IDENTITY:--}" == "-" ]]; then
     # Don't let the local build try to Sparkle-update itself to production.
     /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$PLIST" 2>/dev/null \
         || /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$PLIST"
+    # Dev-flavored OAuth callback scheme: the site's dev-callback page bounces
+    # to serialnotes-dev://, so a local build's Notion connect can't be
+    # hijacked by (or hijack) an installed production app.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 serialnotes-dev" "$PLIST"
 fi
 
 # Write PkgInfo so LaunchServices treats this as a proper app.

@@ -21,6 +21,7 @@ struct OnboardingFlowView: View {
     let voiceStore: VoiceProfileStore
     let identitySettings: IdentitySettings
     let meetingDetector: MeetingDetectionService
+    let notionConnection: NotionConnection
 
     enum Step: Int, CaseIterable {
         case welcome, microphone, systemAudio, appleIntelligence, storage, voice, done
@@ -52,6 +53,9 @@ struct OnboardingFlowView: View {
     /// Set once the user picks a notes home in the storage step — drives the
     /// "saved in … in …" confirmation. Nil while still choosing.
     @State private var storageConfirmation: StorageConfirmation?
+    /// True while the Notion tile's OAuth round trip is out in the browser —
+    /// the storage step shows a waiting state until the callback lands.
+    @State private var awaitingNotion = false
 
     /// On-disk folder created inside the chosen storage destination. Human-friendly
     /// so it reads well in the confirmation ("saved in Meeting Notes in Obsidian").
@@ -106,6 +110,7 @@ struct OnboardingFlowView: View {
                 awaitingSystemAudio = false
                 showingEnrollment = false
                 storageConfirmation = nil
+                awaitingNotion = false
             }
             // Mark shown the moment the guide actually appears (not at the
             // auto-open decision point), so a failed openWindow can't suppress
@@ -310,12 +315,20 @@ struct OnboardingFlowView: View {
             extra: {
                 if let confirmation = storageConfirmation {
                     storageConfirmationDetails(confirmation)
+                } else if awaitingNotion {
+                    notionAwaitingDetails
                 } else {
                     destinationGrid
                 }
             },
             utilityRow: {
-                if storageConfirmation == nil {
+                if awaitingNotion, storageConfirmation == nil {
+                    Button("Cancel") {
+                        notionConnection.cancelConnect()
+                        awaitingNotion = false
+                    }
+                    .buttonStyle(.link)
+                } else if storageConfirmation == nil {
                     HStack(spacing: 16) {
                         Button("Choose a folder…", action: chooseCustomStorage)
                             .buttonStyle(.link)
@@ -327,16 +340,59 @@ struct OnboardingFlowView: View {
                 }
             }
         )
+        // The Notion tile's confirmation can only land once the browser round
+        // trip completes; watch the connection instead of blocking the step.
+        .onChange(of: notionConnection.status) { _, newStatus in
+            guard awaitingNotion else { return }
+            switch newStatus {
+            case .connected:
+                awaitingNotion = false
+                storageConfirmation = StorageConfirmation(
+                    markdownMessage: "After each meeting, your notes go straight into **Notion**.",
+                    hint: "A Markdown copy is also kept on your Mac."
+                )
+            case .disconnected, .needsReconnect:
+                // Denied, failed, or canceled — back to the grid; any failure
+                // detail is shown there via the connection's error message.
+                awaitingNotion = false
+            case .connecting:
+                break
+            }
+        }
+    }
+
+    /// Waiting state while the Notion consent screen is open in the browser.
+    private var notionAwaitingDetails: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Finish connecting in your browser — approve Serial Notes in Notion, and you'll come right back here.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360)
+        }
     }
 
     private var destinationGrid: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 78), spacing: 12)],
-            alignment: .center,
-            spacing: 12
-        ) {
-            ForEach(NotesDestination.availableApps + NotesDestination.locations) { dest in
-                DestinationTile(destination: dest) { choose(dest) }
+        VStack(spacing: 10) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 78), spacing: 12)],
+                alignment: .center,
+                spacing: 12
+            ) {
+                ForEach(NotesDestination.availableApps + NotesDestination.locations) { dest in
+                    DestinationTile(destination: dest) { choose(dest) }
+                }
+            }
+            // A failed/denied Notion connect returns here; say why.
+            if let error = notionConnection.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 40)
@@ -505,11 +561,15 @@ struct OnboardingFlowView: View {
     }
 
     /// One-click destination tile. For Apple Notes / Bear this enables direct-send
-    /// (notes pushed into the app after each meeting); for everything else it
-    /// creates the notes folder in the right place. Falls back to the folder panel
-    /// if the directory can't be created (e.g. a permissions hiccup).
+    /// (notes pushed into the app after each meeting); Notion routes through its
+    /// OAuth connect flow first; for everything else it creates the notes folder
+    /// in the right place. Falls back to the folder panel if the directory can't
+    /// be created (e.g. a permissions hiccup).
     private func choose(_ destination: NotesDestination) {
-        guard !destination.comingSoon else { return }
+        if destination.pushTarget == .notion {
+            connectNotion()
+            return
+        }
         if let target = destination.pushTarget {
             exportSettings.setEnabled(target, true)
             // Prompt for Apple Notes access right now (at opt-in) rather than after
@@ -529,6 +589,28 @@ struct OnboardingFlowView: View {
             return
         }
         storageConfirmation = .folder(notesFolderName, in: plan.locationLabel, hint: plan.hint)
+    }
+
+    /// The Notion tile: already connected just flips the toggle on; otherwise
+    /// run the OAuth round trip, waiting in place until the browser bounces
+    /// back (`.onChange(of: notionConnection.status)` lands the confirmation).
+    private func connectNotion() {
+        if notionConnection.isConnected {
+            exportSettings.setEnabled(.notion, true)
+            storageConfirmation = StorageConfirmation(
+                markdownMessage: "After each meeting, your notes go straight into **Notion**.",
+                hint: "A Markdown copy is also kept on your Mac."
+            )
+            return
+        }
+        awaitingNotion = true
+        // Re-front the guide when the callback lands — the browser took focus,
+        // and an `.accessory` app won't come back on its own.
+        let window = guideWindow
+        notionConnection.onFlowFinished = {
+            window.value?.orderFrontRegardless()
+        }
+        notionConnection.connect()
     }
 
     private func chooseCustomStorage() {
@@ -757,37 +839,30 @@ private struct StorageConfirmation {
 }
 
 /// A tappable destination in the storage step — an installed app's real icon, or
-/// an SF Symbol for a generic location. A `comingSoon` destination (e.g. Notion)
-/// renders dimmed, labeled, and non-interactive.
+/// an SF Symbol fallback (generic locations, and Notion when its desktop app
+/// isn't installed — the tile is offered either way, since the integration is
+/// the connection, not the app).
 private struct DestinationTile: View {
     let destination: NotesDestination
     let action: () -> Void
 
     @State private var hovering = false
 
-    private var comingSoon: Bool { destination.comingSoon }
-
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
                 icon
                     .frame(width: 40, height: 40)
-                    .opacity(comingSoon ? 0.4 : 1)
                 Text(destination.name)
                     .font(.caption)
-                    .foregroundStyle(comingSoon ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                if comingSoon {
-                    Text("Coming soon")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
             }
             .frame(width: 78, height: 82)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.primary.opacity(hovering && !comingSoon ? 0.08 : 0.04))
+                    .fill(Color.primary.opacity(hovering ? 0.08 : 0.04))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -796,8 +871,7 @@ private struct DestinationTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(comingSoon)
-        .onHover { hovering = comingSoon ? false : $0 }
+        .onHover { hovering = $0 }
     }
 
     @ViewBuilder private var icon: some View {

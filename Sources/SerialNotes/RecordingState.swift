@@ -49,6 +49,9 @@ final class RecordingState {
     @ObservationIgnored weak var storageSettings: StorageSettings?
     @ObservationIgnored weak var identitySettings: IdentitySettings?
     @ObservationIgnored weak var exportSettings: ExportSettings?
+    /// Injected seam for the Notion export (production: `NotionConnection`) —
+    /// the static `MeetingExporter` can't carry connection state or credentials.
+    @ObservationIgnored weak var notionSender: (any NotionSending)?
     @ObservationIgnored weak var manualNotesSettings: ManualNotesSettings?
     @ObservationIgnored weak var manualNotesStore: ManualNotesStore?
     @ObservationIgnored weak var manualNotesWindowController: ManualNotesWindowController?
@@ -412,8 +415,11 @@ final class RecordingState {
         let summarySnapshot = summarySettings?.snapshot() ?? .disabled
         let keepAudioFiles = storageSettings?.saveAudioFiles ?? true
         // Freeze the enabled export targets at stop time so a mid-finalization
-        // toggle can't change what gets pushed.
+        // toggle can't change what gets pushed. For Notion the *destination
+        // identity* (workspace + page ID) is snapshotted too — never tokens;
+        // credentials are loaded fresh when the deferred export runs.
         let exportTargets = exportSettings?.activeTargets ?? []
+        let notionDestination = exportTargets.contains(.notion) ? notionSender?.exportDestination : nil
         var diagnostics = pendingMeetingDiagnostics
         diagnostics?.stopReason = reason.diagnosticsValue
         pendingMeetingDiagnostics = nil
@@ -437,6 +443,7 @@ final class RecordingState {
             summaryCutoff: Self.summaryCutoff(for: reason, sessionStart: session.startDate),
             notesSnapshot: notesSnapshot,
             exportTargets: exportTargets,
+            notionDestination: notionDestination,
             meetingDiagnostics: diagnostics
         )
 
@@ -635,16 +642,28 @@ final class RecordingState {
                 self?.onUnnamedSpeakers?(directory, pendingSpeakerCount)
             }
         }
-        if !context.exportTargets.isEmpty, !context.stopReason.isAppQuit {
+        let localAppTargets = context.exportTargets.intersection([.appleNotes, .bear])
+        if !localAppTargets.isEmpty, !context.stopReason.isAppQuit {
             let transcriptURL = session.directory.appendingPathComponent("transcript.md")
-            let targets = context.exportTargets
             actions.append {
                 // Fire-and-forget so it can't delay anything — the first Apple
                 // Notes send blocks on a TCC prompt. The on-disk transcript is
                 // the source of truth either way.
                 Task.detached(priority: .utility) {
-                    await MeetingExporter.export(targets: targets, transcriptURL: transcriptURL)
+                    await MeetingExporter.export(targets: localAppTargets, transcriptURL: transcriptURL)
                 }
+            }
+        }
+        // Notion rides the same queue (defers behind a successor recording,
+        // drops at quit) through the injected seam. No destination snapshot —
+        // the toggle was on but nothing was connected at the stop press —
+        // means no send.
+        if context.exportTargets.contains(.notion),
+           let destination = context.notionDestination,
+           !context.stopReason.isAppQuit {
+            let transcriptURL = session.directory.appendingPathComponent("transcript.md")
+            actions.append { [weak self] in
+                self?.notionSender?.sendTranscript(at: transcriptURL, destination: destination)
             }
         }
         guard !actions.isEmpty else { return }
@@ -988,5 +1007,9 @@ private struct StopContext: Sendable {
     let summaryCutoff: TimeInterval?
     let notesSnapshot: ManualNotesSnapshot?
     let exportTargets: Set<ExportTarget>
+    /// Where in Notion this meeting should land, frozen at the stop press —
+    /// identity only (workspace + page ID), never tokens. nil when the Notion
+    /// toggle was off or nothing was connected.
+    let notionDestination: NotionExportDestination?
     let meetingDiagnostics: MeetingSessionDiagnostics?
 }

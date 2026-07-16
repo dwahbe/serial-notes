@@ -27,6 +27,21 @@
     <string>1</string>
     <key>LSUIElement</key>
     <true/>
+    <!-- Custom URL scheme the Notion OAuth callback pages bounce into
+         (serialnotes://oauth/notion?…). build-app.sh restamps the scheme to
+         serialnotes-dev for ad-hoc dev builds so both flavors can complete
+         OAuth side-by-side. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.serialnotes.app.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>serialnotes</string>
+            </array>
+        </dict>
+    </array>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Serial Notes captures system audio to transcribe your meetings.</string>
     <key>NSMicrophoneUsageDescription</key>

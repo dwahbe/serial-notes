@@ -395,6 +395,77 @@ private struct MeetingRow: View {
 
 // MARK: - General Tab
 
+/// The Notion connection details rendered *inside* the "Send to Notion"
+/// toggle's form cell (same cell, no divider — a separate row reads as a
+/// fourth export target): Connect / waiting / connected (workspace +
+/// destination) / reconnect badge, plus any connect-flow error. Indent and
+/// `.small` controls subordinate it to the toggle, per the HIG's
+/// indent-dependent-settings guidance. Connecting opens the default browser;
+/// the callback re-fronts this window via `onFlowFinished`.
+private struct NotionConnectionRow: View {
+    let connection: NotionConnection
+    let navigation: SettingsNavigation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                switch connection.status {
+                case .disconnected:
+                    Text("Connect your Notion account to turn this on.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Connect…", action: beginConnect)
+                case .connecting:
+                    Text("Waiting for Notion in your browser…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") { connection.cancelConnect() }
+                case .connected(let workspaceName):
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(workspaceName.isEmpty ? "Connected to Notion" : workspaceName)
+                        Text("Sends to its “Meeting Notes” page")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Disconnect") {
+                        Task { await connection.disconnect() }
+                    }
+                case .needsReconnect:
+                    Label("Connection expired", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    // Disconnect must be reachable here too — otherwise a user
+                    // who no longer wants Notion export is stuck with a checked,
+                    // disabled toggle and no way off without a full re-auth.
+                    Button("Disconnect") {
+                        Task { await connection.disconnect() }
+                    }
+                    Button("Reconnect…", action: beginConnect)
+                }
+            }
+            .controlSize(.small)
+            if let error = connection.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.leading, 16)
+    }
+
+    private func beginConnect() {
+        // Return to this window once the browser bounces back into the app.
+        connection.onFlowFinished = { [weak navigation] in
+            navigation?.presentSettings()
+        }
+        connection.connect()
+    }
+}
+
 private struct GeneralSettingsTab: View {
     @Environment(StorageSettings.self) private var storageSettings
     @Environment(SummarySettings.self) private var summarySettings
@@ -402,6 +473,7 @@ private struct GeneralSettingsTab: View {
     @Environment(ManualNotesSettings.self) private var manualNotesSettings
     @Environment(ManualNotesWindowController.self) private var manualNotesWindow
     @Environment(ExportSettings.self) private var exportSettings
+    @Environment(NotionConnection.self) private var notionConnection
     @Environment(UpdaterController.self) private var updater
     @Environment(RecordingState.self) private var recordingState
     @Environment(SettingsNavigation.self) private var navigation
@@ -512,10 +584,19 @@ private struct GeneralSettingsTab: View {
                     }
                 Toggle("Send to Bear", isOn: $export.sendToBear)
                     .disabled(!bearInstalled)
+                // Availability = connected, not installed — Notion is a web
+                // integration, so there is no isInstalled gate here. The
+                // connection details share the toggle's cell so no divider
+                // separates them (see NotionConnectionRow).
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Send to Notion", isOn: $export.sendToNotion)
+                        .disabled(!notionConnection.isConnected)
+                    NotionConnectionRow(connection: notionConnection, navigation: navigation)
+                }
             } header: {
                 Text("Send to apps")
             } footer: {
-                Text("After each meeting, the notes are also added straight into the app — Apple Notes via a “Meeting Notes” folder, Bear as a new note. A Markdown copy always stays in your storage folder. The first Apple Notes send asks permission to add notes.\(bearInstalled ? "" : " Bear isn’t installed.")")
+                Text("After each meeting, the notes are also added straight into the app — Apple Notes via a “Meeting Notes” folder, Bear as a new note, Notion as a page in your connected workspace. A Markdown copy always stays in your storage folder. The first Apple Notes send asks permission to add notes.\(bearInstalled ? "" : " Bear isn’t installed.")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

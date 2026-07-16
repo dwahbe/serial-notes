@@ -170,6 +170,20 @@ private final class BannerRecorder {
     func record(_ dir: URL) { directories.append(dir) }
 }
 
+/// Fake `NotionSending` seam: a scriptable stop-time destination and a record
+/// of every send (URL + the destination snapshot it carried).
+@MainActor
+private final class FakeNotionSender: NotionSending {
+    var destination: NotionExportDestination?
+    private(set) var sends: [(url: URL, destination: NotionExportDestination)] = []
+
+    var exportDestination: NotionExportDestination? { destination }
+
+    func sendTranscript(at transcriptURL: URL, destination: NotionExportDestination) {
+        sends.append((transcriptURL, destination))
+    }
+}
+
 // MARK: - Suite
 
 @Suite("Recording State Lifecycle", .serialized)
@@ -480,6 +494,108 @@ struct RecordingStateLifecycleTests {
             let saved = try String(contentsOf: URL(fileURLWithPath: pointer), encoding: .utf8)
             #expect(saved == "crucial notes")
         }
+    }
+
+    @Test("Notion exports defer FIFO behind a successor, each carrying the destination frozen at its own stop press")
+    func notionExportsDeferFIFOWithFrozenSnapshots() async throws {
+        let endGate = AsyncPermitGate()
+        let transcription = FakeTranscription(endSessionGate: endGate)
+        let capture = FakeCapture()
+        let (state, dir) = try makeState(capture: capture, transcription: transcription)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let exportDefaultsName = "notion-export-\(UUID().uuidString)"
+        let exportDefaults = UserDefaults(suiteName: exportDefaultsName)!
+        defer { exportDefaults.removePersistentDomain(forName: exportDefaultsName) }
+        let exportSettings = ExportSettings(userDefaults: exportDefaults)
+        exportSettings.sendToNotion = true
+        state.exportSettings = exportSettings
+        let sender = FakeNotionSender()
+        let destinationA = NotionExportDestination(workspaceID: "ws-1", pageID: "page-A")
+        sender.destination = destinationA
+        state.notionSender = sender
+
+        // A records and stops — its destination snapshot is frozen NOW.
+        await state.start(storageDirectory: dir)
+        #expect(await waitUntil { !state.isAwaitingTranscription })
+        state.stop()
+
+        // B records; a self-heal (or reconnect) moves the destination under it.
+        await state.start(storageDirectory: dir)
+        let destinationB = NotionExportDestination(workspaceID: "ws-1", pageID: "page-B")
+        sender.destination = destinationB
+
+        endGate.permit()  // A finalizes under B → its send is deferred, not fired
+        #expect(await waitUntil { !state.isFinalizing })
+        #expect(sender.sends.isEmpty)
+
+        state.stop()
+        endGate.permit()  // B finalizes with nothing newer active → queue flushes
+        #expect(await waitUntil { !state.isFinalizing })
+        #expect(await waitUntil { sender.sends.count == 2 })
+
+        // FIFO, each send pointing at its own transcript with its own snapshot.
+        let started = await transcription.startedSessionDirectories
+        #expect(sender.sends.map(\.url) == started.map { $0.appendingPathComponent("transcript.md") })
+        #expect(sender.sends.map(\.destination) == [destinationA, destinationB])
+    }
+
+    @Test("Deferred Notion exports are dropped at quit")
+    func notionExportDroppedAtQuit() async throws {
+        let endGate = AsyncPermitGate()
+        let transcription = FakeTranscription(endSessionGate: endGate)
+        let capture = FakeCapture()
+        let (state, dir) = try makeState(capture: capture, transcription: transcription)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let exportDefaultsName = "notion-export-\(UUID().uuidString)"
+        let exportDefaults = UserDefaults(suiteName: exportDefaultsName)!
+        defer { exportDefaults.removePersistentDomain(forName: exportDefaultsName) }
+        let exportSettings = ExportSettings(userDefaults: exportDefaults)
+        exportSettings.sendToNotion = true
+        state.exportSettings = exportSettings
+        let sender = FakeNotionSender()
+        sender.destination = NotionExportDestination(workspaceID: "ws-1", pageID: "page-A")
+        state.notionSender = sender
+
+        await state.start(storageDirectory: dir)
+        #expect(await waitUntil { !state.isAwaitingTranscription })
+        state.stop()  // A finalizing, endSession gated
+
+        await state.start(storageDirectory: dir)  // B records during A's finalization
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(100))
+            endGate.permit(2)
+        }
+        await state.stopAndWait(reason: .appQuit)
+
+        // A's deferred send and B's quit-stop both drop — exports never fire
+        // into a terminating app.
+        #expect(sender.sends.isEmpty)
+    }
+
+    @Test("Notion toggle on with nothing connected exports nothing")
+    func notionToggleWithoutConnectionExportsNothing() async throws {
+        let transcription = FakeTranscription()
+        let capture = FakeCapture()
+        let (state, dir) = try makeState(capture: capture, transcription: transcription)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let exportDefaultsName = "notion-export-\(UUID().uuidString)"
+        let exportDefaults = UserDefaults(suiteName: exportDefaultsName)!
+        defer { exportDefaults.removePersistentDomain(forName: exportDefaultsName) }
+        let exportSettings = ExportSettings(userDefaults: exportDefaults)
+        exportSettings.sendToNotion = true
+        state.exportSettings = exportSettings
+        let sender = FakeNotionSender()  // destination stays nil — disconnected
+        state.notionSender = sender
+
+        await state.start(storageDirectory: dir)
+        #expect(await waitUntil { !state.isAwaitingTranscription })
+        await state.stopAndWait()
+
+        #expect(sender.sends.isEmpty)
     }
 
     @Test("Quit is bounded even when the parked session was stopped BEFORE the quit (non-quit reason)")

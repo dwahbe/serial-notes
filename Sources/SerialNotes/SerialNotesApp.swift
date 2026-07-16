@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     weak var meetingDetectionService: MeetingDetectionService?
     weak var manualNotesStore: ManualNotesStore?
     weak var manualNotesWindowController: ManualNotesWindowController?
+    weak var notionConnection: NotionConnection?
     /// Set when `SerialNotesApp.init` held back the launch-time model download
     /// because another instance was still running; invoked once this launch has
     /// survived the single-instance guard.
@@ -19,6 +20,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // finishes launching can land behind the frontmost app and stall the
         // launch invisibly. May not return: the defer path exits the process.
         SingleInstanceGuard.enforce()
+
+        // Custom-scheme URLs (the Notion OAuth callback bounce). Registered
+        // via kAEGetURL because this is an `.accessory` app that usually has
+        // no window open — SwiftUI's `.onOpenURL` needs a live scene to fire.
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURL(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        guard
+            let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+            let url = URL(string: urlString)
+        else { return }
+        route(url)
+    }
+
+    /// Belt-and-suspenders alongside the kAEGetURL handler: SwiftUI/AppKit may
+    /// deliver URL opens through this delegate method instead, depending on
+    /// which internal handler won registration. Both paths converge here, and
+    /// the OAuth flow's single-use state makes an (unobserved-in-practice)
+    /// double delivery harmless.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { route(url) }
+    }
+
+    private func route(_ url: URL) {
+        if notionConnection?.handleCallbackURL(url) != true {
+            NSLog("[SerialNotes] unhandled URL event: %@", url.absoluteString)
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -89,6 +123,7 @@ struct SerialNotesApp: App {
     @State private var settingsNavigation: SettingsNavigation
     @State private var updaterController: UpdaterController
     @State private var onboardingSettings: OnboardingSettings
+    @State private var notionConnection: NotionConnection
 
     init() {
         let recording = RecordingState()
@@ -105,6 +140,8 @@ struct SerialNotesApp: App {
         let navigation = SettingsNavigation()
         let detector = MeetingDetectionService(recordingState: recording, meetingSettings: meeting)
         let modelState = ModelDownloadState(transcriptionService: recording.transcriptionService)
+        let notion = NotionConnection()
+        notion.exportSettings = export
 
         recording.voiceProfileStore = voices
         recording.summarySettings = summary
@@ -114,6 +151,7 @@ struct SerialNotesApp: App {
         recording.manualNotesSettings = manualNotes
         recording.manualNotesStore = manualNotesStore
         recording.manualNotesWindowController = manualNotesWindow
+        recording.notionSender = notion
         manualNotesWindow.notesStore = manualNotesStore
         recording.onRecordingChange = { [weak detector] in detector?.recordingStateChanged() }
         // After a recording finalizes with unrecognized speakers, offer to name them.
@@ -160,11 +198,17 @@ struct SerialNotesApp: App {
         _settingsNavigation = State(initialValue: navigation)
         _updaterController = State(initialValue: UpdaterController())
         _onboardingSettings = State(initialValue: OnboardingSettings())
+        _notionConnection = State(initialValue: notion)
 
         appDelegate.recordingState = recording
         appDelegate.meetingDetectionService = detector
         appDelegate.manualNotesStore = manualNotesStore
         appDelegate.manualNotesWindowController = manualNotesWindow
+        appDelegate.notionConnection = notion
+
+        // Surface a persisted Notion connection in Settings/onboarding without
+        // blocking launch on Keychain I/O.
+        Task { await notion.loadPersistedStatus() }
 
         // Kick model download off at app launch, not when the popover first
         // opens — the banner lets users start recording without ever opening
@@ -238,6 +282,7 @@ struct SerialNotesApp: App {
                 .environment(settingsNavigation)
                 .environment(updaterController)
                 .environment(recordingState)
+                .environment(notionConnection)
         }
 
         // The notepad is a floating NSPanel owned by ManualNotesWindowController
@@ -250,7 +295,8 @@ struct SerialNotesApp: App {
                 exportSettings: exportSettings,
                 voiceStore: voiceProfileStore,
                 identitySettings: identitySettings,
-                meetingDetector: meetingDetectionService
+                meetingDetector: meetingDetectionService,
+                notionConnection: notionConnection
             )
         }
         .windowResizability(.contentSize)

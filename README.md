@@ -99,7 +99,7 @@ On first launch, the app prefetches the models from Hugging Face in the backgrou
 - **LLM post-processing:** Apple Foundation Models (on-device, macOS 26+) — per-utterance punctuation and capitalization, plus the end-of-session summary and action items
 - **Updates:** [Sparkle](https://sparkle-project.org) — Developer ID-signed, notarized auto-updates from an EdDSA-signed appcast
 
-No Electron, no web views. The only network calls are the one-time model download and Sparkle's periodic update check.
+No Electron, no web views. The only network calls are the one-time model download, Sparkle's periodic update check, and the Notion export if you've connected it.
 
 ## Non-goals
 
@@ -111,6 +111,7 @@ No Electron, no web views. The only network calls are the one-time model downloa
 - Transcription, punctuation, summaries, and action items all run on-device
 - No analytics, no telemetry
 - The FluidAudio models are downloaded once from Hugging Face; Apple's Foundation Models base model is managed by the OS
+- Direct send is optional — Notion delivery goes to a page in your own workspace, and the connection can only add pages, not read anything
 - Update checks fetch a small appcast file — no identifiers or system profiling attached. Beyond that and the one-time model download, your audio and transcripts never leave your machine
 - Recordings stay on your Mac until you delete their session folders
 

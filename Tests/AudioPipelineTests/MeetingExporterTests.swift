@@ -57,6 +57,39 @@ struct MeetingExporterTests {
         #expect(MeetingExporter.strippingFrontMatter(input) == input)
     }
 
+    @Test("Notion body: front-matter and the notes sentinel stripped, H1 first for title derivation")
+    func notionBodyComposition() {
+        // The exact composition NotionConnection.sendTranscript applies before
+        // POSTing the markdown — Notion derives the page title from the first
+        // H1, so it must lead, and the invisible sentinel must never ship.
+        let raw = """
+        ---
+        date: 2026-06-09
+        duration: 01h02m03s
+        ---
+
+        # Meeting — 2026-06-09 at 3:04 PM
+
+        ## Notes
+
+        - pasted quote that looks like **A Speaker** (00:00:01): hi
+        \(TranscriptFormatter.manualNotesEndMarker)
+
+        ## Summary
+
+        - We discussed the roadmap.
+
+        **You** (00:00:05): Hello.
+        """
+        let body = MeetingExporter.strippingManualNotesMarker(
+            MeetingExporter.strippingFrontMatter(raw)
+        )
+        #expect(body.hasPrefix("# Meeting — 2026-06-09 at 3:04 PM"))
+        #expect(!body.contains(TranscriptFormatter.manualNotesEndMarker))
+        #expect(body.contains("- pasted quote that looks like"))
+        #expect(body.contains("## Summary"))
+    }
+
     // MARK: - HTML body
 
     @Test("Renders headings, lists, task items and speaker turns to single-line HTML")
@@ -263,11 +296,12 @@ struct MeetingExporterTests {
 struct ExportSettingsTests {
     @Test("activeTargets reflects the enabled toggles")
     func activeTargetsMapping() {
-        // ExportSettings persists to UserDefaults.standard, so set explicit values
-        // up front rather than relying on the persisted state.
-        let settings = ExportSettings()
-        settings.sendToAppleNotes = false
-        settings.sendToBear = false
+        // Isolated suite so this test neither reads leaked toggles nor leaks its
+        // own into a suite that constructs ExportSettings from .standard.
+        let suiteName = "export-settings-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ExportSettings(userDefaults: defaults)
         #expect(settings.activeTargets.isEmpty)
 
         settings.setEnabled(.appleNotes, true)
@@ -278,6 +312,9 @@ struct ExportSettingsTests {
 
         settings.setEnabled(.appleNotes, false)
         #expect(settings.activeTargets == [.bear])
+
+        settings.setEnabled(.notion, true)
+        #expect(settings.activeTargets == [.bear, .notion])
     }
 }
 

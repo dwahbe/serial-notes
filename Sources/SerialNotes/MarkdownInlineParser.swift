@@ -48,6 +48,46 @@ enum MarkdownInlineParser {
         return renderHTML(in: fullRange, spans: parser.parse(fullRange), source: source)
     }
 
+    /// The canonical delimiter string for each delimiter-based kind — the one
+    /// home of the marker table, consumed by `MarkdownInlineToggle` so the
+    /// grammar and the shortcuts can't drift. Bracket syntaxes (link, escape)
+    /// have no delimiter; reaching them here is caller error.
+    static func marker(for kind: Kind) -> String {
+        switch kind {
+        case .bold: "**"
+        case .italic: "*"
+        case .boldItalic: "***"
+        case .strikethrough: "~~"
+        case .highlight: "=="
+        case .code: "`"
+        case .link, .escape: preconditionFailure("\(kind) is not a delimiter kind")
+        }
+    }
+
+    /// Whether the character at `index` is backslash-escaped (an odd run of
+    /// backslashes precedes it). Shared with the toggle's caret-run scans so
+    /// an escaped delimiter is never mistaken for a live marker.
+    static func isEscaped(at index: Int, in source: NSString) -> Bool {
+        var slashCount = 0
+        var cursor = index
+        while cursor > 0, source.character(at: cursor - 1) == CharacterCode.backslash {
+            slashCount += 1
+            cursor -= 1
+        }
+        return slashCount.isMultiple(of: 2) == false
+    }
+
+    /// `line` minus its trailing line-break characters — the single notion of
+    /// a line's content shared by the toggle and the live editor (both strip
+    /// U+2028/U+2029 alongside \n and \r).
+    static func contentRange(ofLine line: NSRange, in source: NSString) -> NSRange {
+        var end = NSMaxRange(line)
+        while end > line.location, CharacterCode.isNewline(source.character(at: end - 1)) {
+            end -= 1
+        }
+        return NSRange(location: line.location, length: end - line.location)
+    }
+
     private static func renderHTML(in range: NSRange, spans: [Span], source: NSString) -> String {
         var html = ""
         var cursor = range.location
@@ -382,13 +422,7 @@ enum MarkdownInlineParser {
         }
 
         private func isEscaped(_ index: Int) -> Bool {
-            var slashCount = 0
-            var cursor = index
-            while cursor > 0, source.character(at: cursor - 1) == CharacterCode.backslash {
-                slashCount += 1
-                cursor -= 1
-            }
-            return slashCount.isMultiple(of: 2) == false
+            MarkdownInlineParser.isEscaped(at: index, in: source)
         }
     }
 
@@ -398,7 +432,7 @@ enum MarkdownInlineParser {
         let kind: Kind
     }
 
-    private enum CharacterCode {
+    enum CharacterCode {
         static let backslash: unichar = 92
         static let asterisk: unichar = 42
         static let underscore: unichar = 95

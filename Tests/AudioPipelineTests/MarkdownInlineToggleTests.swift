@@ -304,4 +304,118 @@ struct MarkdownInlineToggleTests {
         #expect(result.text == "abc****")
         #expect(result.selection == NSRange(location: 5, length: 0))
     }
+
+    // MARK: - Links beside the selection
+
+    @Test("⌘K beside an existing link no-ops instead of absorbing its URL")
+    func linkWrapAdjacentToLinkNoOps() {
+        // Absorption's touches relation includes edge-adjacency, so the link
+        // guard must reject the same relation — an absorbed link's `](url)`
+        // is stripped as syntax and the destination is silently destroyed.
+        #expect(MarkdownInlineToggle.edit(
+            for: .link,
+            selection: NSRange(location: 21, length: 4),
+            in: "[here](https://x.com)more"
+        ) == nil)
+        #expect(MarkdownInlineToggle.edit(
+            for: .link,
+            selection: NSRange(location: 0, length: 4),
+            in: "more[here](https://x.com)"
+        ) == nil)
+    }
+
+    @Test("⌘K inside the empty-link artifact toggles it off from anywhere inside")
+    func linkArtifactTogglesOffFromInside() throws {
+        // Caret in the empty destination — the state the wrap leaves behind.
+        let fromDestination = try #require(toggled(
+            .link, in: "click [here]()", selection: NSRange(location: 13, length: 0)
+        ))
+        #expect(fromDestination.text == "click here")
+        #expect(fromDestination.selection == NSRange(location: 6, length: 4))
+
+        // Caret clicked back into the label.
+        let fromLabel = try #require(toggled(
+            .link, in: "[he re]()", selection: NSRange(location: 3, length: 0)
+        ))
+        #expect(fromLabel.text == "he re")
+        #expect(fromLabel.selection == NSRange(location: 0, length: 5))
+    }
+
+    // MARK: - Markers are not editable text
+
+    @Test("A cross-style toggle with the caret inside a marker no-ops instead of deleting it")
+    func caretInsideMarkerCrossStyleNoOps() throws {
+        for caret in [1, 7] {
+            #expect(MarkdownInlineToggle.edit(
+                for: .italic, selection: NSRange(location: caret, length: 0), in: "**bold**"
+            ) == nil)
+        }
+        #expect(MarkdownInlineToggle.edit(
+            for: .italic, selection: NSRange(location: 1, length: 0), in: "__bold__"
+        ) == nil)
+        // The enclosing span's own style still unwraps from inside its marker.
+        let unwrapped = try #require(toggled(
+            .bold, in: "**bold**", selection: NSRange(location: 1, length: 0)
+        ))
+        #expect(unwrapped.text == "bold")
+    }
+
+    @Test("Caret edits inside code-span content no-op — the content is literal")
+    func caretInsideCodeSpanNoOps() {
+        // `arr[i]()` — ⌘K between the parens must not strip the literal
+        // brackets as an empty-link artifact.
+        #expect(MarkdownInlineToggle.edit(
+            for: .link, selection: NSRange(location: 8, length: 0), in: "`arr[i]()`"
+        ) == nil)
+        // Nor may emphasis pair arithmetic delete a literal `**` inside code.
+        #expect(MarkdownInlineToggle.edit(
+            for: .italic, selection: NSRange(location: 3, length: 0), in: "`a**b`"
+        ) == nil)
+    }
+
+    @Test("Escaped delimiters never count as pair artifacts")
+    func escapedDelimitersAreNotPairs() {
+        // `\**` with the caret between the asterisks: the run starts at an
+        // escaped character — arithmetic on it would eat the literal.
+        #expect(MarkdownInlineToggle.edit(
+            for: .italic, selection: NSRange(location: 2, length: 0), in: "\\**"
+        ) == nil)
+        #expect(MarkdownInlineToggle.edit(
+            for: .strikethrough, selection: NSRange(location: 3, length: 0), in: "\\~~~~"
+        ) == nil)
+    }
+
+    // MARK: - Block prefixes stay structure
+
+    @Test("Wraps clamp past block markers instead of styling them")
+    func wrapClampsPastBlockPrefix() throws {
+        let list = try #require(toggled(
+            .bold, in: "- buy milk", selection: NSRange(location: 0, length: 10)
+        ))
+        #expect(list.text == "- **buy milk**")
+
+        let heading = try #require(toggled(
+            .bold, in: "# Title", selection: NSRange(location: 0, length: 7)
+        ))
+        #expect(heading.text == "# **Title**")
+
+        let task = try #require(toggled(
+            .bold, in: "- [ ] todo", selection: NSRange(location: 0, length: 10)
+        ))
+        #expect(task.text == "- [ ] **todo**")
+
+        let ordered = try #require(toggled(
+            .bold, in: "1. item", selection: NSRange(location: 0, length: 7)
+        ))
+        #expect(ordered.text == "1. **item**")
+    }
+
+    @Test("A caret in the marker region snaps to the content instead of splicing it")
+    func caretInMarkerRegionSnapsToContent() throws {
+        let edit = try #require(toggled(
+            .bold, in: "- item", selection: NSRange(location: 1, length: 0)
+        ))
+        #expect(edit.text == "- ****item")
+        #expect(edit.selection == NSRange(location: 4, length: 0))
+    }
 }

@@ -34,15 +34,14 @@ final class ManualNotesTextView: NSTextView {
     // notepad's nonactivating panel can be key while the app is inactive
     // (fullscreen Zoom), and main-menu key-equivalent dispatch only runs for
     // the active app. performKeyEquivalent visits every view in the key
-    // window regardless of focus, hence the first-responder guard (the
-    // window == nil arm keeps windowless test views working — such a view
-    // receives no real events). Every unmatched chord falls through to super
-    // so ⌘C/⌘V/⌘A/⌘Z keep their normal path.
+    // window regardless of focus, hence the first-responder guard. Every
+    // unmatched chord falls through to super so ⌘C/⌘V/⌘A/⌘Z keep their
+    // normal path.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown,
            isEditable,
            !hasMarkedText(),
-           window == nil || window?.firstResponder === self,
+           window?.firstResponder === self,
            let style = Self.toggleStyle(for: event),
            let coordinator = delegate as? ManualNotesMarkdownEditor.Coordinator
         {
@@ -53,13 +52,29 @@ final class ManualNotesTextView: NSTextView {
     }
 
     /// ⌘B/⌘I/⌘E/⌘K plus ⇧⌘X/⇧⌘H, matched on exact modifiers so nothing else
-    /// (⌥ or ⌃ variants, bare letters) is swallowed.
+    /// (⌥ or ⌃ variants, bare letters) is swallowed. Both character fields
+    /// are consulted: on a non-Latin layout (Cyrillic, Greek, …)
+    /// charactersIgnoringModifiers is the native-script letter, while
+    /// characters carries the Command-key ASCII mapping that menu key
+    /// equivalents match — without the fallback every chord dies on those
+    /// layouts.
     static func toggleStyle(for event: NSEvent) -> MarkdownInlineToggle.Style? {
         let modifiers = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .function, .numericPad])
-        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+        for key in [event.charactersIgnoringModifiers, event.characters] {
+            guard let key = key?.lowercased() else { continue }
+            if let style = toggleStyle(forKey: key, modifiers: modifiers) {
+                return style
+            }
+        }
+        return nil
+    }
 
+    private static func toggleStyle(
+        forKey key: String,
+        modifiers: NSEvent.ModifierFlags
+    ) -> MarkdownInlineToggle.Style? {
         if modifiers == [.command] {
             switch key {
             case "b": return .bold
@@ -1198,34 +1213,15 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
 
         private static func contentLineRange(containing location: Int, in source: NSString) -> NSRange {
             let safeLocation = min(max(location, 0), source.length)
-            var range = source.lineRange(for: NSRange(location: safeLocation, length: 0))
-            while range.length > 0 {
-                let lastIndex = NSMaxRange(range) - 1
-                let character = source.character(at: lastIndex)
-                if character == 10 || character == 13 {
-                    range.length -= 1
-                } else {
-                    break
-                }
-            }
-            return range
+            let line = source.lineRange(for: NSRange(location: safeLocation, length: 0))
+            return MarkdownInlineParser.contentRange(ofLine: line, in: source)
         }
 
-        // ATX headings require a space after the fence (or an empty heading), so a
-        // meeting note such as `#123` remains ordinary text.
-        private static let headingRegex = try! NSRegularExpression(pattern: "^(#{1,6})([ \\t]+|$)")
-        // Keep block/list grammar aligned with MeetingExporter: three unordered
-        // markers, both ordered delimiters, and optional task syntax. Digits are
-        // ASCII-only ([0-9], not \d) so everything the grammar admits as ordered
-        // is also something `OrderedMarker` can classify — ICU \d matches Unicode
-        // digits that Int() can't parse, which used to hide the typed number
-        // behind a drawn bullet.
-        private static let listRegex = try! NSRegularExpression(
-            pattern: "^(\\s*)([-+*]|[0-9]+[.)])(\\s+)(?:(\\[[ xX]\\])(\\s+))?"
-        )
-        private static let listMarkerOnlyRegex = try! NSRegularExpression(
-            pattern: "^(\\s*)([-+*]|[0-9]+[.)])$"
-        )
+        // Single home of the block grammar: MarkdownBlockPrefix (shared with
+        // the inline toggles). Aliased so the many call sites read unchanged.
+        private static let headingRegex = MarkdownBlockPrefix.headingRegex
+        private static let listRegex = MarkdownBlockPrefix.listRegex
+        private static let listMarkerOnlyRegex = MarkdownBlockPrefix.listMarkerOnlyRegex
 
         /// Whether a listRegex marker is digit-shaped ("3." / "3)") as opposed to
         /// a bullet ("-", "+", "*"). Rendering routes on the shape; arithmetic

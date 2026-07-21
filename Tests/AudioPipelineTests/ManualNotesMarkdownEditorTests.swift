@@ -655,7 +655,8 @@ struct ManualNotesMarkdownEditorTests {
 
     private func chordEvent(
         _ key: String,
-        modifiers: NSEvent.ModifierFlags = [.command]
+        modifiers: NSEvent.ModifierFlags = [.command],
+        characters: String? = nil
     ) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,
@@ -664,11 +665,32 @@ struct ManualNotesMarkdownEditorTests {
             timestamp: 0,
             windowNumber: 0,
             context: nil,
-            characters: key,
+            characters: characters ?? key,
             charactersIgnoringModifiers: key,
             isARepeat: false,
             keyCode: 0
         )!
+    }
+
+    /// Hosts the view in a bare window with focus so the chord path's
+    /// first-responder guard (`window?.firstResponder === self`) is exercised
+    /// for real — production views always have a window, so the guard keeps
+    /// no windowless arm for tests to lean on.
+    private func hostInWindow(
+        _ textView: ManualNotesTextView,
+        delegate: NSWindowDelegate? = nil
+    ) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.delegate = delegate
+        window.contentView = textView
+        window.makeFirstResponder(textView)
+        return window
     }
 
     @Test("The chord table maps the six styling shortcuts and nothing else")
@@ -689,9 +711,25 @@ struct ManualNotesMarkdownEditorTests {
         #expect(ManualNotesTextView.toggleStyle(for: chordEvent("b", modifiers: [])) == nil)
     }
 
+    @Test("Non-Latin layouts match through the characters fallback")
+    func nonLatinLayoutMatchesThroughCharacters() {
+        // With Command held, a Cyrillic layout reports the native letter in
+        // charactersIgnoringModifiers and the ASCII-capable mapping in
+        // characters — the chord must match via the latter.
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("и", characters: "b")) == .bold)
+        #expect(
+            ManualNotesTextView.toggleStyle(
+                for: chordEvent("Ч", modifiers: [.command, .shift], characters: "X")
+            ) == .strikethrough
+        )
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("и", characters: "q")) == nil)
+    }
+
     @Test("⌘B wraps the selection, styles it, and re-hides markers on caret move")
     func commandBWrapsAndRestyles() async throws {
         let (textView, coordinator) = makeEditor("make this bold")
+        let window = hostInWindow(textView)
+        defer { window.close() }
         textView.setSelectedRange(NSRange(location: 10, length: 4))
 
         #expect(textView.performKeyEquivalent(with: chordEvent("b")))
@@ -713,6 +751,8 @@ struct ManualNotesMarkdownEditorTests {
     @Test("⌘B at a caret opens an empty pair and toggles it back off")
     func commandBCaretRoundTrip() {
         let (textView, _) = makeEditor("")
+        let window = hostInWindow(textView)
+        defer { window.close() }
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         #expect(textView.performKeyEquivalent(with: chordEvent("b")))
@@ -735,6 +775,8 @@ struct ManualNotesMarkdownEditorTests {
         ]
         for testCase in cases {
             let (textView, _) = makeEditor(testCase.before)
+            let window = hostInWindow(textView)
+            defer { window.close() }
             textView.setSelectedRange(testCase.selection)
             #expect(textView.performKeyEquivalent(with: chordEvent(testCase.key, modifiers: testCase.modifiers)))
             #expect(textView.string == testCase.after)
@@ -744,6 +786,8 @@ struct ManualNotesMarkdownEditorTests {
     @Test("Unmatched chords and read-only views fall through untouched")
     func unmatchedChordsFallThrough() {
         let (textView, _) = makeEditor("make this bold")
+        let window = hostInWindow(textView)
+        defer { window.close() }
         textView.setSelectedRange(NSRange(location: 10, length: 4))
 
         #expect(!textView.performKeyEquivalent(with: chordEvent("c")))
@@ -759,6 +803,8 @@ struct ManualNotesMarkdownEditorTests {
     @Test("Marked text (IME composition) suppresses the toggle")
     func markedTextSuppressesToggle() {
         let (textView, _) = makeEditor("a")
+        let window = hostInWindow(textView)
+        defer { window.close() }
         textView.setSelectedRange(NSRange(location: 1, length: 0))
         textView.setMarkedText(
             "か",
@@ -773,6 +819,8 @@ struct ManualNotesMarkdownEditorTests {
     @Test("A multi-line selection consumes the chord without editing")
     func multiLineSelectionConsumesWithoutEdit() {
         let (textView, _) = makeEditor("ab\ncd")
+        let window = hostInWindow(textView)
+        defer { window.close() }
         textView.setSelectedRange(NSRange(location: 0, length: 5))
 
         #expect(textView.performKeyEquivalent(with: chordEvent("b")))
@@ -795,16 +843,7 @@ struct ManualNotesMarkdownEditorTests {
         // through the window), so host the view for this test — which also
         // exercises the real first-responder guard.
         let undoHost = UndoHost()
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.delegate = undoHost
-        window.contentView = textView
-        window.makeFirstResponder(textView)
+        let window = hostInWindow(textView, delegate: undoHost)
         defer { window.close() }
 
         textView.setSelectedRange(NSRange(location: 10, length: 4))
@@ -820,14 +859,7 @@ struct ManualNotesMarkdownEditorTests {
     @Test("Chords are ignored while focus is elsewhere in the window")
     func chordIgnoredWithoutFirstResponder() {
         let (textView, _) = makeEditor("make this bold")
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.contentView = textView
+        let window = hostInWindow(textView)
         window.makeFirstResponder(nil)
         defer { window.close() }
 

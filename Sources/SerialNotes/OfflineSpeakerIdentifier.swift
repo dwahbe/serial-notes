@@ -148,9 +148,14 @@ actor OfflineSpeakerIdentifier {
         if let modelLoadTask {
             task = modelLoadTask
         } else {
-            // Not OfflineDiarizerModels.load() — that hardcodes GPU-capable
-            // compute units; the loader applies ModelComputePolicy.
-            let newTask = Task { try await OfflineDiarizerModelLoader.load() }
+            // A nil configuration means GPU-capable .all upstream, so the
+            // policy configuration is passed explicitly (honored as of
+            // FluidAudio 0.15.5 — the old fork around the ignored parameter
+            // is gone); the fbank front-end stays cpuOnly inside upstream's
+            // loader.
+            let newTask = Task {
+                try await OfflineDiarizerModels.load(configuration: ModelComputePolicy.configuration())
+            }
             modelLoadTask = newTask
             task = newTask
         }

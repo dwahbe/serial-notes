@@ -22,6 +22,14 @@ struct ComputePolicyGuardTests {
         let exemptFileNames: Set<String>
     }
 
+    /// Calls that are safe only when a specific argument is passed explicitly —
+    /// their upstream defaults are (or could silently become) GPU-capable.
+    private struct RequiredArgumentPattern {
+        let call: String
+        let requiredArgument: String
+        let reason: String
+    }
+
     // Needles are split ("(" appended) so this file's own literals can't
     // trip the sweep in some future refactor that drops the self-exemption.
     private static let banned: [BannedPattern] = [
@@ -31,19 +39,37 @@ struct ComputePolicyGuardTests {
             exemptFileNames: []
         ),
         .init(
-            needle: "LSEENDDiarizer(" + ")",
-            reason: "pass computeUnits: .cpuOnly explicitly so the units never track an upstream default",
-            exemptFileNames: []
-        ),
-        .init(
-            needle: "OfflineDiarizerModels.load(",
-            reason: "upstream hardcodes GPU-capable units (ignores its configuration param); use OfflineDiarizerModelLoader.load()",
+            needle: "LSEENDDiarizer(" + "variant:",
+            reason: "the loading convenience init has no computeUnits parameter; use LSEENDDiarizer() + initialize(variant:computeUnits:)",
             exemptFileNames: []
         ),
         .init(
             needle: "MLModelConfiguration(" + ")",
             reason: "defaults to .all (GPU); route through ModelComputePolicy.configuration()",
             exemptFileNames: ["ModelComputePolicy.swift"]
+        ),
+    ]
+
+    private static let requiredArguments: [RequiredArgumentPattern] = [
+        .init(
+            call: "AsrModels.downloadAndLoad(",
+            requiredArgument: "configuration:",
+            reason: "its nil-default is safe today but tracks upstream, not us — pass ModelComputePolicy.configuration()"
+        ),
+        .init(
+            call: "OfflineDiarizerModels.load(",
+            requiredArgument: "configuration:",
+            reason: "nil configuration means .all (GPU) upstream — pass ModelComputePolicy.configuration()"
+        ),
+        .init(
+            call: ".initialize(" + "variant:",
+            requiredArgument: "computeUnits:",
+            reason: "pass computeUnits: .cpuOnly explicitly so the units never track an upstream default"
+        ),
+        .init(
+            call: "LSEENDModel.loadFromHuggingFace(",
+            requiredArgument: "computeUnits:",
+            reason: "pass computeUnits: .cpuOnly explicitly so the units never track an upstream default"
         ),
     ]
 
@@ -74,16 +100,16 @@ struct ComputePolicyGuardTests {
                 }
             }
 
-            // AsrModels.downloadAndLoad must pass configuration: explicitly
-            // (its nil-default is safe today but tracks upstream, not us).
-            var searchRange = contents.startIndex..<contents.endIndex
-            while let match = contents.range(of: "AsrModels.downloadAndLoad(", range: searchRange) {
-                let windowEnd = contents.index(match.upperBound, offsetBy: 120, limitedBy: contents.endIndex) ?? contents.endIndex
-                if !contents[match.upperBound..<windowEnd].contains("configuration:") {
-                    let lineNumber = contents[..<match.lowerBound].count(where: { $0 == "\n" }) + 1
-                    violations.append("\(file.lastPathComponent):\(lineNumber) calls AsrModels.downloadAndLoad without configuration: — pass ModelComputePolicy.configuration()")
+            for pattern in Self.requiredArguments {
+                var searchRange = contents.startIndex..<contents.endIndex
+                while let match = contents.range(of: pattern.call, range: searchRange) {
+                    let windowEnd = contents.index(match.upperBound, offsetBy: 120, limitedBy: contents.endIndex) ?? contents.endIndex
+                    if !contents[match.upperBound..<windowEnd].contains(pattern.requiredArgument) {
+                        let lineNumber = contents[..<match.lowerBound].count(where: { $0 == "\n" }) + 1
+                        violations.append("\(file.lastPathComponent):\(lineNumber) calls \(pattern.call)…) without \(pattern.requiredArgument) — \(pattern.reason)")
+                    }
+                    searchRange = match.upperBound..<contents.endIndex
                 }
-                searchRange = match.upperBound..<contents.endIndex
             }
         }
         #expect(violations.isEmpty, "GPU-capable model loads outside ModelComputePolicy:\n\(violations.joined(separator: "\n"))")

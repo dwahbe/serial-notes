@@ -85,7 +85,8 @@ actor OfflineSpeakerIdentifier {
     /// (`min: 2`) and then merge clusters whose centroids sit within `mergeThreshold`
     /// cosine — i.e. one speaker the diarizer split into fragments. Calibration on
     /// real audio: same speaker ≈ 0.96, different ≤ 0.31, so 0.5 separates cleanly.
-    /// Final speakers below `minSpeechSeconds` are dropped as noise; results are
+    /// Speakers below `minSpeechSeconds` are adopted into an embedding-matched
+    /// survivor when one exists (see `adopt`), else dropped as noise; results are
     /// returned longest-talking first.
     func speakers(
         inRecordingAt url: URL,
@@ -236,16 +237,66 @@ actor OfflineSpeakerIdentifier {
         return groups
     }
 
+    /// Adoption cut-offs for sub-floor fragments, in cosine-similarity units.
+    /// Call-start audio (codec ramp-up, a Bluetooth headset switching into call
+    /// mode) often embeds far enough from the same speaker's main cluster to miss
+    /// the 0.5 merge bar; the merge calibration (same speaker ≈ 0.96, different
+    /// ≤ 0.31) leaves room to adopt at 0.4 without crossing a different voice.
+    /// The margin mirrors `SpeakerIdentityMatcher`'s guard: with several
+    /// survivors a fragment must clearly prefer one — an ambiguous near-tie
+    /// stays dropped. Provisional pending calibration on real recordings.
+    static let fragmentAdoptionThreshold: Float = 0.4
+    static let fragmentAdoptionMargin: Float = 0.1
+
     /// Production post-processing, factored out so the "merge before duration
     /// filtering" invariant is directly unit-testable without loading models.
+    /// Sub-floor clusters are offered for adoption instead of being discarded,
+    /// so the duration floor gates *who becomes a speaker*, not which speech
+    /// keeps attribution coverage.
     static func mergeAndFilter(
         _ clusters: [OfflineSpeakerCluster],
         threshold: Float,
-        minSpeechSeconds: Double
+        minSpeechSeconds: Double,
+        adoptionThreshold: Float = fragmentAdoptionThreshold,
+        adoptionMargin: Float = fragmentAdoptionMargin
     ) -> [OfflineSpeakerCluster] {
-        merge(clusters, threshold: threshold)
-            .filter { $0.totalSpeechSeconds >= minSpeechSeconds }
+        let merged = merge(clusters, threshold: threshold)
+        let survivors = merged.filter { $0.totalSpeechSeconds >= minSpeechSeconds }
+        let fragments = merged.filter { $0.totalSpeechSeconds < minSpeechSeconds }
+        return adopt(fragments, into: survivors, threshold: adoptionThreshold, margin: adoptionMargin)
             .sorted { $0.totalSpeechSeconds > $1.totalSpeechSeconds }
+    }
+
+    /// Fold each sub-floor fragment into the surviving cluster its embedding
+    /// matches: best survivor at or above `threshold` cosine, and — when there is
+    /// a runner-up — ahead of it by at least `margin`. A fragment that matches no
+    /// survivor is dropped exactly as before; `SpeakerReattribution`'s leftover
+    /// "Unknown speaker" namespace remains the backstop for its transcript
+    /// entries. This is attribution-only recovery: a fragment can extend a
+    /// speaker's coverage but never becomes a nameable speaker itself.
+    static func adopt(
+        _ fragments: [OfflineSpeakerCluster],
+        into survivors: [OfflineSpeakerCluster],
+        threshold: Float,
+        margin: Float
+    ) -> [OfflineSpeakerCluster] {
+        guard !survivors.isEmpty else { return [] }
+        var adopted = survivors
+        for fragment in fragments {
+            // Score against the post-merge survivor centroids, not the running
+            // combined ones, so adoption order can't change which survivor a
+            // fragment matches.
+            let scores = survivors.indices
+                .map { index in
+                    (index: index,
+                     similarity: SpeakerIdentityMatcher.cosineSimilarity(fragment.embedding, survivors[index].embedding))
+                }
+                .sorted { $0.similarity > $1.similarity }
+            guard let best = scores.first, best.similarity >= threshold else { continue }
+            if scores.count > 1, best.similarity - scores[1].similarity < margin { continue }
+            adopted[best.index] = combine(adopted[best.index], fragment)
+        }
+        return adopted
     }
 
     /// Combine two clusters: union of segments (time-sorted), duration-weighted +

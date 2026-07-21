@@ -128,4 +128,121 @@ struct OfflineSpeakerIdentifierTests {
         #expect(retained.count == 1)
         #expect(abs(retained[0].totalSpeechSeconds - 24) < 1e-6)
     }
+
+    // MARK: - fragment adoption (sub-floor clusters folded into survivors)
+
+    private func cluster(_ id: String, _ embedding: [Float], from start: Double, to end: Double) -> OfflineSpeakerCluster {
+        OfflineSpeakerCluster(id: id, embedding: embedding, segments: [.init(start: start, end: end)])
+    }
+
+    // Unit vector at a chosen cosine from [1, 0], so tests read as similarities.
+    private func embedding(cosine: Float) -> [Float] {
+        [cosine, (1 - cosine * cosine).squareRoot()]
+    }
+
+    @Test("Sub-floor fragment below the merge bar but above the adoption bar joins the sole survivor")
+    func adoptsCallStartFragment() {
+        // The 1:1 regression: the call-opening greeting misses the 0.5 merge bar
+        // (cosine 0.45), falls under the 20s floor, and must not become a
+        // leftover "Unknown speaker" when its voice matches the only survivor.
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("main", [1, 0], from: 10, to: 110),
+             cluster("greeting", embedding(cosine: 0.45), from: 0, to: 4)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.count == 1)
+        #expect(retained[0].id == "main")
+        #expect(abs(retained[0].totalSpeechSeconds - 104) < 1e-6)
+        #expect(retained[0].segments.map(\.start) == [0, 10])
+    }
+
+    @Test("A genuinely different sub-floor voice is still dropped")
+    func dropsUnmatchedFragment() {
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("main", [1, 0], from: 0, to: 100),
+             cluster("brief-guest", [0, 1], from: 100, to: 104)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.count == 1)
+        #expect(abs(retained[0].totalSpeechSeconds - 100) < 1e-6)
+    }
+
+    @Test("Fragment just below the adoption bar is dropped")
+    func dropsFragmentBelowAdoptionThreshold() {
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("main", [1, 0], from: 0, to: 100),
+             cluster("frag", embedding(cosine: 0.35), from: 100, to: 104)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.count == 1)
+        #expect(abs(retained[0].totalSpeechSeconds - 100) < 1e-6)
+    }
+
+    @Test("Ambiguous fragment between two survivors is dropped by the margin guard")
+    func marginGuardDropsAmbiguousFragment() {
+        let survivors = [
+            cluster("a", [1, 0], from: 0, to: 30),
+            cluster("b", [0, 1], from: 40, to: 70),
+        ]
+        // Normalized similarities: ≈0.74 to a, ≈0.68 to b — both clear the
+        // threshold, but the 0.06 lead is inside the 0.1 margin.
+        let adopted = OfflineSpeakerIdentifier.adopt(
+            [cluster("frag", [0.6, 0.55], from: 80, to: 84)],
+            into: survivors,
+            threshold: 0.4,
+            margin: 0.1)
+        #expect(adopted == survivors)
+    }
+
+    @Test("Clear-winner fragment adopts into the matching survivor only")
+    func clearWinnerAdopts() {
+        let adopted = OfflineSpeakerIdentifier.adopt(
+            [cluster("frag", [1, 0], from: 80, to: 84)],
+            into: [cluster("a", [1, 0], from: 0, to: 30),
+                   cluster("b", [0, 1], from: 40, to: 70)],
+            threshold: 0.4,
+            margin: 0.1)
+        #expect(adopted.count == 2)
+        #expect(adopted[0].id == "a")
+        #expect(abs(adopted[0].totalSpeechSeconds - 34) < 1e-6)
+        #expect(adopted[0].segments.map(\.start) == [0, 80])
+        #expect(abs(adopted[1].totalSpeechSeconds - 30) < 1e-6)
+    }
+
+    @Test("Multiple matching fragments accumulate into the same survivor")
+    func fragmentsAccumulate() {
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("main", [1, 0], from: 20, to: 70),
+             cluster("f1", embedding(cosine: 0.45), from: 0, to: 3),
+             cluster("f2", embedding(cosine: 0.48), from: 5, to: 9)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.count == 1)
+        #expect(retained[0].id == "main")
+        #expect(abs(retained[0].totalSpeechSeconds - 57) < 1e-6)
+        #expect(retained[0].segments.map(\.start) == [0, 5, 20])
+    }
+
+    @Test("All-fragment input still yields no speakers")
+    func noSurvivorsMeansNoSpeakers() {
+        // Nothing clears the floor → the pass reports empty and the caller falls
+        // back to the streaming path, exactly as before adoption existed.
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("a", [1, 0], speechSeconds: 5),
+             cluster("b", [0, 1], speechSeconds: 5)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.isEmpty)
+    }
+
+    @Test("Fragment with no usable embedding is dropped, not crashed on")
+    func emptyEmbeddingFragmentDropped() {
+        let retained = OfflineSpeakerIdentifier.mergeAndFilter(
+            [cluster("main", [1, 0], from: 0, to: 100),
+             cluster("frag", [], from: 100, to: 104)],
+            threshold: 0.5,
+            minSpeechSeconds: 20)
+        #expect(retained.count == 1)
+        #expect(abs(retained[0].totalSpeechSeconds - 100) < 1e-6)
+    }
 }

@@ -155,11 +155,13 @@ actor TranscriptionService: TranscriptionSessionManaging {
 
         // Explicit .cpuOnly (also FluidAudio's default, and its documented
         // fastest units for LS-EEND) so no load site inherits a GPU-capable
-        // default — see ModelComputePolicy.
-        let sysDia = LSEENDDiarizer(computeUnits: .cpuOnly)
-        try await sysDia.initialize()
-        let micDia = LSEENDDiarizer(computeUnits: .cpuOnly)
-        try await micDia.initialize()
+        // default — see ModelComputePolicy. The variant is pinned to what
+        // 0.13.6's parameterless initialize() loaded implicitly: a different
+        // variant silently shifts diarization accuracy.
+        let sysDia = LSEENDDiarizer()
+        try await sysDia.initialize(variant: .dihard3, computeUnits: .cpuOnly)
+        let micDia = LSEENDDiarizer()
+        try await micDia.initialize(variant: .dihard3, computeUnits: .cpuOnly)
 
         sideStates[.mic]?.asr = micManager
         sideStates[.system]?.asr = sysManager
@@ -201,7 +203,7 @@ actor TranscriptionService: TranscriptionSessionManaging {
             let diarizer = sideStates[clip.side]?.diarizer
             do {
                 _ = try diarizer?.enrollSpeaker(
-                    withSamples: clip.samples,
+                    withAudio: clip.samples,
                     sourceSampleRate: clip.sampleRate,
                     named: clip.name
                 )
@@ -1343,13 +1345,11 @@ actor TranscriptionService: TranscriptionSessionManaging {
         async let micEntries = highAccuracyEntriesIfPresent(
             from: micURL,
             models: models,
-            asrSource: .microphone,
             transcriptSource: .mic
         )
         async let systemEntries = highAccuracyEntriesIfPresent(
             from: systemURL,
             models: models,
-            asrSource: .system,
             transcriptSource: .system
         )
 
@@ -1360,7 +1360,6 @@ actor TranscriptionService: TranscriptionSessionManaging {
     private func highAccuracyEntriesIfPresent(
         from url: URL,
         models: AsrModels,
-        asrSource: AudioSource,
         transcriptSource: AudioSide
     ) async throws -> [TranscriptEntry] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
@@ -1372,7 +1371,10 @@ actor TranscriptionService: TranscriptionSessionManaging {
         do {
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
-            let result = try await manager.transcribe(url, source: asrSource)
+            // The manager no longer keeps per-source decoder state; a fresh
+            // state per file matches the old per-source isolation exactly.
+            var decoderState = try TdtDecoderState()
+            let result = try await manager.transcribe(url, decoderState: &decoderState)
             return finalEntries(from: result, source: transcriptSource)
         } catch ASRError.invalidAudioData {
             NSLog("[SerialNotes/Transcription] skipping final ASR for invalid audio file: \(url.lastPathComponent)")

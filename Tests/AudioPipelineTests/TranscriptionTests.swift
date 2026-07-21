@@ -110,8 +110,8 @@ struct TranscriptionTests {
 
     @Test("LS-EEND diarizer processes audio and returns timeline")
     func diarization() async throws {
-        let diarizer = LSEENDDiarizer(computeUnits: .cpuOnly)
-        try await diarizer.initialize()
+        let diarizer = LSEENDDiarizer()
+        try await diarizer.initialize(variant: .dihard3, computeUnits: .cpuOnly)
 
         let (url, samples) = try Self.generateSpeech(
             "Good morning everyone. Today we will discuss the quarterly results. "

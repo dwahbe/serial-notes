@@ -89,6 +89,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // The quit-drain stop reopens the prompt gate, and .terminateLater keeps
+        // the run loop pumping — without this latch a deferred "call detected"
+        // banner could surface mid-quit and offer a recording start() would
+        // abandon.
+        meetingDetectionService?.prepareForTermination()
+
         // Gate on the widest lifecycle flag: a session that is still spinning up
         // (isStarting) or capturing ahead of its transcription attach has work
         // to drain just like an active or finalizing one.

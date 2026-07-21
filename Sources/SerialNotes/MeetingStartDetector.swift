@@ -25,6 +25,12 @@ import Foundation
 /// is spinning up or capturing; a candidate whose debounce matures behind a
 /// closed gate is *deferred* and surfaces the moment the gate reopens, provided
 /// it is still capturing and unsuppressed.
+///
+/// A deferral must only surface against **live** capture state: the service
+/// calls `promptGateOpened` only while the monitor is running, and a deferral
+/// that outlives a monitor stop is carried into the replacement reducer
+/// (`init(resumingFrom:)`) to surface — or clear — on its first live snapshot.
+/// Surfacing from a frozen set would prompt for calls that already ended.
 struct MeetingStartDetector: Sendable {
     enum Effect: Equatable, Sendable {
         /// Begin (or restart) the sustain debounce for `bundleID`; on expiry the
@@ -63,19 +69,41 @@ struct MeetingStartDetector: Sendable {
     /// `CallEndStateMachine.inactiveGraceSeconds`).
     let debounceSeconds: TimeInterval
 
-    init(debounceSeconds: TimeInterval = 1.5) {
+    /// `promptGateClosed` seeds the gate so a reducer built mid-session can't
+    /// default open; `resumingFrom` carries the deferred candidate and episode
+    /// suppressions across a monitor restart (suspend/resume, readiness
+    /// bounces) — without it a still-capturing second call lands in the fresh
+    /// baseline and can never prompt again.
+    init(
+        debounceSeconds: TimeInterval = 1.5,
+        promptGateClosed: Bool = false,
+        resumingFrom previous: MeetingStartDetector? = nil
+    ) {
         self.debounceSeconds = debounceSeconds
+        self.promptsAllowed = !promptGateClosed
+        if let previous {
+            self.deferredBundleID = previous.deferredBundleID
+            self.suppressedEpisodes = previous.suppressedEpisodes
+        }
     }
 
     /// Feed the current set of known meeting apps capturing mic input. `order` lists
     /// the same apps in disambiguation preference (frontmost → most-recent →
     /// alphabetical) for picking among simultaneous new transitions.
     mutating func receiveCapturing(_ owners: Set<String>, order: [String]) -> [Effect] {
-        // First snapshot establishes the baseline — nothing already capturing prompts.
+        // First snapshot establishes the baseline — nothing already capturing
+        // prompts, except a carried deferral: it already earned its debounce,
+        // and this live read is exactly the still-capturing confirmation its
+        // surfacing was waiting for.
         guard baseline != nil else {
             baseline = owners
             previouslyCapturing = owners
-            return []
+            // A carried suppression whose app is no longer capturing ended its
+            // episode while the monitor was down — the stop edge that clears
+            // it was never observed, so prune against this live read or it
+            // silently swallows the app's next, genuinely new call.
+            suppressedEpisodes.formIntersection(owners)
+            return promptsAllowed ? surfaceDeferredIfLive(owners) : []
         }
 
         let previous = previouslyCapturing
@@ -99,6 +127,12 @@ struct MeetingStartDetector: Sendable {
         }
         if let deferred = deferredBundleID, stopped.contains(deferred) {
             deferredBundleID = nil
+        }
+
+        // A deferral that couldn't surface at gate open (the monitor was down)
+        // surfaces on the first live snapshot that still shows it capturing.
+        if promptsAllowed {
+            effects.append(contentsOf: surfaceDeferredIfLive(owners))
         }
 
         // One prompt at a time: while something is shown, pending, or deferred,
@@ -134,8 +168,7 @@ struct MeetingStartDetector: Sendable {
             deferredBundleID = bundleID
             return []
         }
-        lockedBundleID = bundleID
-        return [.showPrompt(bundleID: bundleID)]
+        return surface(bundleID)
     }
 
     /// Close the prompt gate: a recording session is spinning up or actively
@@ -153,13 +186,29 @@ struct MeetingStartDetector: Sendable {
         promptsAllowed = true
         guard let deferred = deferredBundleID else { return [] }
         deferredBundleID = nil
-        guard previouslyCapturing.contains(deferred),
-              !suppressedEpisodes.contains(deferred),
-              lockedBundleID == nil else {
+        return surface(deferred)
+    }
+
+    /// Locks onto `bundleID` and shows its prompt — the one surfacing tail
+    /// shared by a matured debounce, gate reopening, and a carried deferral's
+    /// live re-confirmation, so an eligibility rule can't drift between them.
+    private mutating func surface(_ bundleID: String) -> [Effect] {
+        guard previouslyCapturing.contains(bundleID),
+              !suppressedEpisodes.contains(bundleID) else {
             return []
         }
-        lockedBundleID = deferred
-        return [.showPrompt(bundleID: deferred)]
+        lockedBundleID = bundleID
+        return [.showPrompt(bundleID: bundleID)]
+    }
+
+    /// Surfaces the deferred candidate when `owners` — a live snapshot —
+    /// still contains it; clears it either way, since a live read that no
+    /// longer shows it capturing means its episode is over.
+    private mutating func surfaceDeferredIfLive(_ owners: Set<String>) -> [Effect] {
+        guard let deferred = deferredBundleID else { return [] }
+        deferredBundleID = nil
+        guard owners.contains(deferred) else { return [] }
+        return surface(deferred)
     }
 
     /// The user dismissed the prompt — suppress this capture episode so we stay

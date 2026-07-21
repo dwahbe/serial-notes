@@ -240,4 +240,80 @@ struct MeetingStartDetectorTests {
         #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
         #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
     }
+
+    @Test("A deferral survives a mid-recording monitor restart and surfaces at the stop")
+    func carriedDeferralSurvivesMonitorRestart() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // deferred
+        // Suspend/resume replaces the reducer mid-recording; the deferral and
+        // the closed gate carry into the replacement instead of vanishing
+        // into the fresh baseline.
+        var restarted = MeetingStartDetector(promptGateClosed: true, resumingFrom: detector)
+        #expect(feed(&restarted, [zoom]).isEmpty)                  // baseline; gate closed
+        #expect(restarted.promptGateOpened() == [.showPrompt(bundleID: zoom)])
+        #expect(restarted.lockedBundleID == zoom)
+    }
+
+    @Test("A deferral whose gate opened while the monitor was down surfaces on the next live snapshot")
+    func carriedDeferralSurfacesOnLiveSnapshot() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // deferred
+        // The stop landed while the monitor was down, so the service reopened
+        // the gate without calling promptGateOpened; the restart carries the
+        // deferral into an open-gate reducer, and the first live snapshot is
+        // the still-capturing confirmation it was waiting for.
+        var restarted = MeetingStartDetector(resumingFrom: detector)
+        #expect(feed(&restarted, [zoom]) == [.showPrompt(bundleID: zoom)])
+        #expect(restarted.lockedBundleID == zoom)
+    }
+
+    @Test("A carried deferral for a call that ended offline clears without prompting")
+    func carriedDeferralForEndedCallClears() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // deferred
+        var restarted = MeetingStartDetector(resumingFrom: detector)
+        #expect(feed(&restarted, []).isEmpty)                      // live read: call over
+        // The candidate slot is free again: a genuinely new call prompts.
+        #expect(feed(&restarted, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(restarted.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
+
+    @Test("Carried suppressions are pruned against the restart's live baseline")
+    func carriedSuppressionPrunesAgainstLiveBaseline() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // prompt shown
+        _ = detector.dismiss()                                     // episode suppressed
+        // The call ends while the monitor is down — the stop edge that would
+        // have cleared the suppression is never observed.
+        var restarted = MeetingStartDetector(resumingFrom: detector)
+        #expect(feed(&restarted, []).isEmpty)                      // live baseline: call over
+        // A genuinely new call must prompt again.
+        #expect(feed(&restarted, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(restarted.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
+
+    @Test("A carried suppression for a still-live episode keeps gating its app")
+    func carriedSuppressionKeepsGatingLiveEpisode() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // prompt shown
+        _ = detector.dismiss()                                     // episode suppressed
+        var restarted = MeetingStartDetector(resumingFrom: detector)
+        feed(&restarted, [zoom])                                   // baseline: episode continues
+        // Ending the episode and starting a new call re-prompts as usual.
+        feed(&restarted, [])
+        #expect(feed(&restarted, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+    }
 }

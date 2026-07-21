@@ -128,6 +128,8 @@ final class MeetingDetectionService {
     @ObservationIgnored private var runningMeetingApps: Set<String> = []
     // Paused while voice enrollment holds the mic (so its own capture can't prompt).
     @ObservationIgnored private var isSuspended: Bool = false
+    // Latched by prepareForTermination(); no prompt may surface mid-quit.
+    @ObservationIgnored private var isShuttingDown: Bool = false
     // Mirrors the reducer's prompt gate (closed while a session is spinning up or
     // actively capturing) — see syncPromptGate.
     @ObservationIgnored private var isPromptGateClosed: Bool = false
@@ -216,6 +218,10 @@ final class MeetingDetectionService {
     }
 
     private func showNextNamingPromptIfFree() {
+        // Mid-quit nothing may surface: prepareForTermination's own
+        // clearDetected() lands here, and a naming banner shown during the
+        // drain would outlive every flow its buttons lead to.
+        guard !isShuttingDown else { return }
         guard activeNamingPrompt == nil, !pendingNamingPrompts.isEmpty else { return }
         let prompt = pendingNamingPrompts.removeFirst()
         activeNamingPrompt = prompt
@@ -256,13 +262,33 @@ final class MeetingDetectionService {
 
     /// Resume detection after `suspendDetection()`. Restarting the monitor
     /// re-establishes the baseline, so an app still capturing when enrollment ends
-    /// is treated as in-progress rather than a fresh transition.
+    /// is treated as in-progress rather than a fresh transition. (A deferred
+    /// back-to-back candidate is exempt — `startInputMonitoring` carries it into
+    /// the fresh reducer, which re-confirms it against the live baseline.)
     func resumeDetection() {
         isSuspended = false
         updateInputMonitoring()
     }
 
+    /// The app is draining toward termination: retract any visible offer and
+    /// surface nothing new — a banner shown mid-quit offers a recording that
+    /// `RecordingState.start()` would notice `quitRequested` and abandon.
+    func prepareForTermination() {
+        isShuttingDown = true
+        clearDetected()
+    }
+
     func recordingStateChanged() {
+        // A closing gate syncs BEFORE the transition block so the association
+        // it consumes exists when call-end monitoring attaches — even if a
+        // future RecordingState flips isRecording without the separate
+        // isStarting ping. An opening gate syncs AFTER, so a stop's call-end
+        // banner teardown can't hide a prompt the reopening gate just
+        // surfaced. (syncPromptGate's own edge guard makes the split safe.)
+        let shouldClose = recordingState?.isStarting == true
+            || recordingState?.isRecording == true
+        if shouldClose { syncPromptGate() }
+
         // Drive call-end monitoring off the actual recording transition only.
         // `start()` also pings this while still spinning up (isRecording == false),
         // and the transition guard keeps that ping from tearing down — or
@@ -277,11 +303,7 @@ final class MeetingDetectionService {
             }
         }
 
-        // The monitor keeps observing through the whole session — only prompt
-        // SURFACING is phase-gated. Sync AFTER the transition block, so a stop's
-        // call-end banner teardown can't hide a prompt the reopening gate just
-        // surfaced.
-        syncPromptGate()
+        if !shouldClose { syncPromptGate() }
     }
 
     /// The prompt gate closes while a session is spinning up or actively
@@ -304,6 +326,13 @@ final class MeetingDetectionService {
             clearDetected()
         } else {
             pendingAssociationBundleID = nil
+            // Only a running monitor may surface the deferral: its capture
+            // state is live. A stopped/suspended monitor's reducer is frozen —
+            // the deferral stays parked and surfaces (or clears) on the first
+            // live snapshot after the next monitor start. During the quit
+            // drain nothing surfaces at all: a banner shown mid-quit offers a
+            // recording that start() would abandon.
+            guard !isShuttingDown, inputCaptureMonitor.isRunning else { return }
             handleStartEffects(startDetector.promptGateOpened())
         }
     }
@@ -336,15 +365,15 @@ final class MeetingDetectionService {
 
     /// Start the monitor with a fresh `MeetingStartDetector`, re-establishing the
     /// baseline so whatever is already capturing now is treated as in-progress.
+    /// The gate seeds from the current phase, and the old reducer's deferral +
+    /// episode suppressions carry over — a deferred back-to-back call must
+    /// survive the restart, not vanish into the fresh baseline.
     private func startInputMonitoring() {
         guard !inputCaptureMonitor.isRunning else { return }
-        startDetector = MeetingStartDetector()
-        // A fresh reducer defaults to an open gate; if the monitor is (re)starting
-        // mid-session (e.g. models became ready during a recording), close it to
-        // match the current phase.
-        if isPromptGateClosed {
-            startDetector.promptGateClosed()
-        }
+        startDetector = MeetingStartDetector(
+            promptGateClosed: isPromptGateClosed,
+            resumingFrom: startDetector
+        )
         inputCaptureMonitor.start()
     }
 
@@ -376,14 +405,19 @@ final class MeetingDetectionService {
                 startDebounceTask?.cancel()
                 startDebounceTask = nil
             case .showPrompt(let bundleID):
-                // Defense in depth: never surface a start prompt while the
-                // prompt gate is closed or before the ASR models are ready (the
-                // reducer gates the former and the monitor the latter, but not
-                // every window is signalled through recordingStateChanged). A
-                // suppressed prompt must also CLEAR the reducer's lock — the
-                // lock was set when the prompt fired, and holding it promptless
-                // would block every later prompt until the app stops capturing.
+                // Defense in depth: never surface a start prompt while a
+                // session is spinning up or capturing (read LIVE from
+                // RecordingState — the mirror only updates on
+                // recordingStateChanged, so it can't cover a window that
+                // signal misses), during the quit drain, or before the ASR
+                // models are ready. A suppressed prompt must also CLEAR the
+                // reducer's lock — the lock was set when the prompt fired,
+                // and holding it promptless would block every later prompt
+                // until the app stops capturing.
                 guard !isPromptGateClosed,
+                      recordingState?.isStarting != true,
+                      recordingState?.isRecording != true,
+                      !isShuttingDown,
                       isReadyToRecord?() != false,
                       let appName = Self.knownMeetingApps[bundleID]?.displayName else {
                     startDetector.consumeLock()
@@ -447,6 +481,13 @@ final class MeetingDetectionService {
     // MARK: - Call End Monitoring
 
     private func beginCallEndMonitoringIfNeeded() {
+        // Consume-on-use: the association belongs to exactly this session. A
+        // successor that starts without an intervening gate transition (any
+        // start-while-still-recording path) must read nil here — inheriting
+        // the predecessor's call would let that idle app auto-stop the new
+        // recording seconds in.
+        let associationBundleID = pendingAssociationBundleID
+        pendingAssociationBundleID = nil
         guard meetingSettings?.autoStopAfterCallEnds == true else {
             return
         }
@@ -456,7 +497,7 @@ final class MeetingDetectionService {
         // recording with no detected meeting (e.g. idle Zoom warm-holding the
         // mic, no call) leaves it nil and gets no auto-stop, so it can't be
         // stopped by that app merely releasing the mic.
-        guard let bundleID = pendingAssociationBundleID,
+        guard let bundleID = associationBundleID,
               let appName = Self.knownMeetingApps[bundleID]?.displayName else {
             return
         }
@@ -479,8 +520,9 @@ final class MeetingDetectionService {
         if meetingDiagnostics.shouldWriteSidecar {
             recordingState?.attachMeetingDiagnosticsForCurrentStop(meetingDiagnostics)
         }
-        // (The reducer's lock was already consumed at gate close — a follow-up
-        // recording can't inherit this association.)
+        // (The association was consumed at this recording's rising edge — a
+        // follow-up recording that starts without a gate transition reads nil
+        // instead of inheriting this call.)
         callEndGraceTask?.cancel()
         callEndGraceTask = nil
         callEndCountdownTask?.cancel()

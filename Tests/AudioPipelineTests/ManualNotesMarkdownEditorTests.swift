@@ -650,4 +650,189 @@ struct ManualNotesMarkdownEditorTests {
         await drainMainQueue()
         #expect(markerFontSize(at: fenceStart, in: textView) >= 1)
     }
+
+    // MARK: - Styling keyboard shortcuts
+
+    private func chordEvent(
+        _ key: String,
+        modifiers: NSEvent.ModifierFlags = [.command]
+    ) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
+            isARepeat: false,
+            keyCode: 0
+        )!
+    }
+
+    @Test("The chord table maps the six styling shortcuts and nothing else")
+    func chordTableMapsStylingShortcuts() {
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("b")) == .bold)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("i")) == .italic)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("e")) == .code)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("k")) == .link)
+        // AppKit reports shift chords with an uppercase letter.
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("X", modifiers: [.command, .shift])) == .strikethrough)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("H", modifiers: [.command, .shift])) == .highlight)
+        // Caps Lock must not defeat the match.
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("b", modifiers: [.command, .capsLock])) == .bold)
+
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("c")) == nil)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("B", modifiers: [.command, .shift])) == nil)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("b", modifiers: [.command, .option])) == nil)
+        #expect(ManualNotesTextView.toggleStyle(for: chordEvent("b", modifiers: [])) == nil)
+    }
+
+    @Test("⌘B wraps the selection, styles it, and re-hides markers on caret move")
+    func commandBWrapsAndRestyles() async throws {
+        let (textView, coordinator) = makeEditor("make this bold")
+        textView.setSelectedRange(NSRange(location: 10, length: 4))
+
+        #expect(textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "make this **bold**")
+        #expect(textView.selectedRange() == NSRange(location: 12, length: 4))
+
+        // The restyle ran synchronously in replaceText's defer: the content is
+        // bold and the markers are revealed while the selection sits on them.
+        let storage = try #require(textView.textStorage)
+        let font = try #require(storage.attribute(.font, at: 12, effectiveRange: nil) as? NSFont)
+        #expect(NSFontManager.shared.traits(of: font).contains(.boldFontMask))
+        #expect(markerFontSize(at: 10, in: textView) >= 1)
+
+        changeSelection(to: NSRange(location: 0, length: 0), in: textView, coordinator)
+        await drainMainQueue()
+        #expect(markerFontSize(at: 10, in: textView) < 1)
+    }
+
+    @Test("⌘B at a caret opens an empty pair and toggles it back off")
+    func commandBCaretRoundTrip() {
+        let (textView, _) = makeEditor("")
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        #expect(textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "****")
+        #expect(textView.selectedRange() == NSRange(location: 2, length: 0))
+
+        #expect(textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string.isEmpty)
+        #expect(textView.selectedRange() == NSRange(location: 0, length: 0))
+    }
+
+    @Test("Each remaining chord applies its style end to end")
+    func remainingChordsApplyTheirStyles() {
+        let cases: [(key: String, modifiers: NSEvent.ModifierFlags, before: String, selection: NSRange, after: String)] = [
+            ("i", [.command], "make this bold", NSRange(location: 10, length: 4), "make this *bold*"),
+            ("e", [.command], "run it", NSRange(location: 4, length: 2), "run `it`"),
+            ("k", [.command], "click here", NSRange(location: 6, length: 4), "click [here]()"),
+            ("X", [.command, .shift], "strike me", NSRange(location: 0, length: 6), "~~strike~~ me"),
+            ("H", [.command, .shift], "note this", NSRange(location: 5, length: 4), "note ==this==")
+        ]
+        for testCase in cases {
+            let (textView, _) = makeEditor(testCase.before)
+            textView.setSelectedRange(testCase.selection)
+            #expect(textView.performKeyEquivalent(with: chordEvent(testCase.key, modifiers: testCase.modifiers)))
+            #expect(textView.string == testCase.after)
+        }
+    }
+
+    @Test("Unmatched chords and read-only views fall through untouched")
+    func unmatchedChordsFallThrough() {
+        let (textView, _) = makeEditor("make this bold")
+        textView.setSelectedRange(NSRange(location: 10, length: 4))
+
+        #expect(!textView.performKeyEquivalent(with: chordEvent("c")))
+        #expect(textView.string == "make this bold")
+
+        // A locked notepad must let ⌘B continue down the chain (where ⌘C etc.
+        // still work), not swallow it.
+        textView.isEditable = false
+        #expect(!textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "make this bold")
+    }
+
+    @Test("Marked text (IME composition) suppresses the toggle")
+    func markedTextSuppressesToggle() {
+        let (textView, _) = makeEditor("a")
+        textView.setSelectedRange(NSRange(location: 1, length: 0))
+        textView.setMarkedText(
+            "か",
+            selectedRange: NSRange(location: 0, length: 1),
+            replacementRange: NSRange(location: 1, length: 0)
+        )
+
+        #expect(!textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(!textView.string.contains("*"))
+    }
+
+    @Test("A multi-line selection consumes the chord without editing")
+    func multiLineSelectionConsumesWithoutEdit() {
+        let (textView, _) = makeEditor("ab\ncd")
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+
+        #expect(textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "ab\ncd")
+    }
+
+    /// Supplies the undo manager a real app window would; a bare test NSWindow
+    /// has none, so `NSResponder.undoManager` resolves to the delegate's.
+    @MainActor
+    private final class UndoHost: NSObject, NSWindowDelegate {
+        let undoManager = UndoManager()
+        func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { undoManager }
+    }
+
+    @Test("A toggle is one undo step, separate from preceding typing")
+    func toggleRegistersUndo() throws {
+        let (textView, _) = makeEditor("make this bold")
+        textView.allowsUndo = true
+        // A windowless view has no undo manager (NSResponder resolves it
+        // through the window), so host the view for this test — which also
+        // exercises the real first-responder guard.
+        let undoHost = UndoHost()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.delegate = undoHost
+        window.contentView = textView
+        window.makeFirstResponder(textView)
+        defer { window.close() }
+
+        textView.setSelectedRange(NSRange(location: 10, length: 4))
+        #expect(textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "make this **bold**")
+
+        let undoManager = try #require(textView.undoManager)
+        #expect(undoManager.canUndo)
+        undoManager.undo()
+        #expect(textView.string == "make this bold")
+    }
+
+    @Test("Chords are ignored while focus is elsewhere in the window")
+    func chordIgnoredWithoutFirstResponder() {
+        let (textView, _) = makeEditor("make this bold")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = textView
+        window.makeFirstResponder(nil)
+        defer { window.close() }
+
+        textView.setSelectedRange(NSRange(location: 10, length: 4))
+        #expect(!textView.performKeyEquivalent(with: chordEvent("b")))
+        #expect(textView.string == "make this bold")
+    }
 }

@@ -30,6 +30,55 @@ final class ManualNotesTextView: NSTextView {
         }
     }
 
+    // Styling chords are matched here rather than via menu items: the
+    // notepad's nonactivating panel can be key while the app is inactive
+    // (fullscreen Zoom), and main-menu key-equivalent dispatch only runs for
+    // the active app. performKeyEquivalent visits every view in the key
+    // window regardless of focus, hence the first-responder guard (the
+    // window == nil arm keeps windowless test views working — such a view
+    // receives no real events). Every unmatched chord falls through to super
+    // so ⌘C/⌘V/⌘A/⌘Z keep their normal path.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           isEditable,
+           !hasMarkedText(),
+           window == nil || window?.firstResponder === self,
+           let style = Self.toggleStyle(for: event),
+           let coordinator = delegate as? ManualNotesMarkdownEditor.Coordinator
+        {
+            coordinator.performInlineToggle(style, in: self)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    /// ⌘B/⌘I/⌘E/⌘K plus ⇧⌘X/⇧⌘H, matched on exact modifiers so nothing else
+    /// (⌥ or ⌃ variants, bare letters) is swallowed.
+    static func toggleStyle(for event: NSEvent) -> MarkdownInlineToggle.Style? {
+        let modifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .function, .numericPad])
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+
+        if modifiers == [.command] {
+            switch key {
+            case "b": return .bold
+            case "i": return .italic
+            case "e": return .code
+            case "k": return .link
+            default: return nil
+            }
+        }
+        if modifiers == [.command, .shift] {
+            switch key {
+            case "x": return .strikethrough
+            case "h": return .highlight
+            default: return nil
+            }
+        }
+        return nil
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         drawRenderedBullets()
@@ -238,6 +287,47 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
                 return true
             }
             return false
+        }
+
+        /// Applies a styling-shortcut toggle (⌘B, ⌘I, …) around the current
+        /// selection. Returns whether an edit was made; a nil toggle (nothing
+        /// sensible to do there) beeps, since the chord was still consumed.
+        @discardableResult
+        func performInlineToggle(
+            _ style: MarkdownInlineToggle.Style,
+            in textView: NSTextView
+        ) -> Bool {
+            guard !applyingStyle, !applyingAutomaticEdit else { return false }
+            guard let edit = MarkdownInlineToggle.edit(
+                for: style,
+                selection: textView.selectedRange(),
+                in: textView.string
+            ) else {
+                NSSound.beep()
+                return false
+            }
+            // Without the break, undoing the toggle would also swallow the
+            // typing run it coalesced into.
+            textView.breakUndoCoalescing()
+            replaceText(
+                in: edit.range,
+                with: edit.replacement,
+                textView: textView,
+                selectionAfter: edit.selectionAfter
+            )
+            textView.undoManager?.setActionName(Self.undoActionName(for: style))
+            return true
+        }
+
+        private static func undoActionName(for style: MarkdownInlineToggle.Style) -> String {
+            switch style {
+            case .bold: "Bold"
+            case .italic: "Italic"
+            case .code: "Code"
+            case .strikethrough: "Strikethrough"
+            case .highlight: "Highlight"
+            case .link: "Link"
+            }
         }
 
         /// Tab / Shift-Tab with the caret on a list line indents or outdents the

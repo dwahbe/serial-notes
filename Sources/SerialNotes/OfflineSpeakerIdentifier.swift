@@ -88,10 +88,15 @@ actor OfflineSpeakerIdentifier {
     /// Speakers below `minSpeechSeconds` are adopted into an embedding-matched
     /// survivor when one exists (see `adopt`), else dropped as noise; results are
     /// returned longest-talking first.
+    /// Merge bar for `speakers`. `Thresholds.provisional.fragmentAdoption` must
+    /// stay strictly below it — adoption exists to catch fragments this bar
+    /// missed (pinned by test).
+    static let defaultMergeThreshold: Float = 0.5
+
     func speakers(
         inRecordingAt url: URL,
         maxSpeakers: Int = 6,
-        mergeThreshold: Float = 0.5,
+        mergeThreshold: Float = defaultMergeThreshold,
         minSpeechSeconds: Double = 20
     ) async throws -> [OfflineSpeakerCluster] {
         try Task.checkCancellation()
@@ -242,28 +247,18 @@ actor OfflineSpeakerIdentifier {
         return groups
     }
 
-    /// Adoption cut-offs for sub-floor fragments, in cosine-similarity units.
-    /// Call-start audio (codec ramp-up, a Bluetooth headset switching into call
-    /// mode) often embeds far enough from the same speaker's main cluster to miss
-    /// the 0.5 merge bar; the merge calibration (same speaker ≈ 0.96, different
-    /// ≤ 0.31) leaves room to adopt at 0.4 without crossing a different voice.
-    /// The margin mirrors `SpeakerIdentityMatcher`'s guard: with several
-    /// survivors a fragment must clearly prefer one — an ambiguous near-tie
-    /// stays dropped. Provisional pending calibration on real recordings.
-    static let fragmentAdoptionThreshold: Float = 0.4
-    static let fragmentAdoptionMargin: Float = 0.1
-
     /// Production post-processing, factored out so the "merge before duration
     /// filtering" invariant is directly unit-testable without loading models.
     /// Sub-floor clusters are offered for adoption instead of being discarded,
     /// so the duration floor gates *who becomes a speaker*, not which speech
-    /// keeps attribution coverage.
+    /// keeps attribution coverage. The adoption cut-offs live in
+    /// `SpeakerIdentityMatcher.Thresholds` alongside the naming thresholds.
     static func mergeAndFilter(
         _ clusters: [OfflineSpeakerCluster],
         threshold: Float,
         minSpeechSeconds: Double,
-        adoptionThreshold: Float = fragmentAdoptionThreshold,
-        adoptionMargin: Float = fragmentAdoptionMargin
+        adoptionThreshold: Float = SpeakerIdentityMatcher.Thresholds.provisional.fragmentAdoption,
+        adoptionMargin: Float = SpeakerIdentityMatcher.Thresholds.provisional.fragmentAdoptionMargin
     ) -> [OfflineSpeakerCluster] {
         let merged = merge(clusters, threshold: threshold)
         let survivors = merged.filter { $0.totalSpeechSeconds >= minSpeechSeconds }
@@ -275,30 +270,35 @@ actor OfflineSpeakerIdentifier {
     /// Fold each sub-floor fragment into the surviving cluster its embedding
     /// matches: best survivor at or above `threshold` cosine, and — when there is
     /// a runner-up — ahead of it by at least `margin`. A fragment that matches no
-    /// survivor is dropped exactly as before; `SpeakerReattribution`'s leftover
-    /// "Unknown speaker" namespace remains the backstop for its transcript
-    /// entries. This is attribution-only recovery: a fragment can extend a
-    /// speaker's coverage but never becomes a nameable speaker itself.
+    /// survivor is dropped exactly as before (with no survivors at all, every
+    /// fragment is); `SpeakerReattribution`'s leftover "Unknown speaker"
+    /// namespace remains the backstop for its transcript entries. This is
+    /// attribution-only recovery: a fragment can extend a speaker's coverage but
+    /// never becomes a nameable speaker itself.
     static func adopt(
         _ fragments: [OfflineSpeakerCluster],
         into survivors: [OfflineSpeakerCluster],
         threshold: Float,
         margin: Float
     ) -> [OfflineSpeakerCluster] {
-        guard !survivors.isEmpty else { return [] }
         var adopted = survivors
         for fragment in fragments {
             // Score against the post-merge survivor centroids, not the running
             // combined ones, so adoption order can't change which survivor a
-            // fragment matches.
-            let scores = survivors.indices
-                .map { index in
-                    (index: index,
-                     similarity: SpeakerIdentityMatcher.cosineSimilarity(fragment.embedding, survivors[index].embedding))
+            // fragment matches. Ties keep the first survivor encountered.
+            var best: (index: Int, similarity: Float)?
+            var runnerUp = -Float.greatestFiniteMagnitude
+            for index in survivors.indices {
+                let similarity = SpeakerIdentityMatcher.cosineSimilarity(fragment.embedding, survivors[index].embedding)
+                if let current = best, similarity <= current.similarity {
+                    runnerUp = max(runnerUp, similarity)
+                } else {
+                    runnerUp = best?.similarity ?? runnerUp
+                    best = (index, similarity)
                 }
-                .sorted { $0.similarity > $1.similarity }
-            guard let best = scores.first, best.similarity >= threshold else { continue }
-            if scores.count > 1, best.similarity - scores[1].similarity < margin { continue }
+            }
+            guard let best, best.similarity >= threshold else { continue }
+            if survivors.count > 1, best.similarity - runnerUp < margin { continue }
             adopted[best.index] = combine(adopted[best.index], fragment)
         }
         return adopted

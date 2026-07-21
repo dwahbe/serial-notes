@@ -140,6 +140,15 @@ struct OfflineSpeakerIdentifierTests {
         [cosine, (1 - cosine * cosine).squareRoot()]
     }
 
+    @Test("Adoption bar sits strictly below the merge bar")
+    func adoptionBarBelowMergeBar() {
+        // Adoption exists to catch fragments the merge bar missed; at or above
+        // it the two-stage design collapses into plain merging.
+        #expect(
+            SpeakerIdentityMatcher.Thresholds.provisional.fragmentAdoption
+                < OfflineSpeakerIdentifier.defaultMergeThreshold)
+    }
+
     @Test("Sub-floor fragment below the merge bar but above the adoption bar joins the sole survivor")
     func adoptsCallStartFragment() {
         // The 1:1 regression: the call-opening greeting misses the 0.5 merge bar

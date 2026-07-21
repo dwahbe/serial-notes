@@ -45,6 +45,19 @@ struct SpeakerIdentityMatcher {
         /// candidate never auto-applies. It can still be suggested for a one-tap
         /// user confirmation, which is safer than silently naming a stranger.
         var requireRunnerUpForAutomaticConfirmation: Bool = true
+        /// Sub-floor fragment adoption (`OfflineSpeakerIdentifier.adopt`): the
+        /// minimum similarity for a short fragment to join a surviving speaker.
+        /// Call-start audio (codec ramp-up, a Bluetooth headset switching into
+        /// call mode) often embeds far enough from the same speaker's main
+        /// cluster to miss the merge bar; the merge calibration (same speaker
+        /// ≈ 0.96, different ≤ 0.31) leaves room to adopt at 0.4 without
+        /// crossing a different voice. Must stay strictly below
+        /// `OfflineSpeakerIdentifier.defaultMergeThreshold` (pinned by test).
+        var fragmentAdoption: Float = 0.4
+        /// With several survivors a fragment must lead the runner-up by this
+        /// much — an ambiguous near-tie stays dropped. Both adoption values are
+        /// provisional pending calibration on real recordings.
+        var fragmentAdoptionMargin: Float = 0.1
 
         /// Calibrated on real audio (FluidAudio WeSpeaker embeddings): same speaker
         /// ≈ 0.96, different ≤ 0.31, so the gap is wide and these are forgiving.

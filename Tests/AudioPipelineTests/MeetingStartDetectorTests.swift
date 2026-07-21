@@ -132,21 +132,110 @@ struct MeetingStartDetectorTests {
         #expect(detector.debounceTimerFired(bundleID: slack) == [.showPrompt(bundleID: slack)])
     }
 
-    @Test("releaseLock clears the lock without suppressing the capture episode")
-    func releaseLockClearsLockOnly() {
+    @Test("consumeLock returns and clears the lock without suppressing the capture episode")
+    func consumeLockClearsLockOnly() {
         var detector = MeetingStartDetector()
         feed(&detector, [])
         feed(&detector, [zoom])
         _ = detector.debounceTimerFired(bundleID: zoom)
         #expect(detector.lockedBundleID == zoom)
 
-        // Recording stopped → the lock is released so a follow-up recording
-        // can't inherit this (now ended) call's association.
-        detector.releaseLock()
+        // A recording begins → the service consumes the lock for call-end
+        // association; the reducer is free to track the next call.
+        #expect(detector.consumeLock() == zoom)
         #expect(detector.lockedBundleID == nil)
+        #expect(detector.consumeLock() == nil)
 
         // The episode was NOT suppressed: once Zoom stops capturing and starts
         // a genuinely new call, it prompts again.
+        feed(&detector, [])
+        #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
+
+    // MARK: Prompt gate
+
+    @Test("A debounce that matures behind a closed gate defers, then surfaces on open")
+    func closedGateDefersPromptUntilOpen() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        // Gate closed → the matured candidate defers instead of prompting.
+        #expect(detector.debounceTimerFired(bundleID: zoom).isEmpty)
+        #expect(detector.lockedBundleID == nil)
+        // A second app can't displace the deferred candidate.
+        #expect(feed(&detector, [zoom, slack]).isEmpty)
+        // Gate reopens → the still-capturing candidate surfaces immediately.
+        #expect(detector.promptGateOpened() == [.showPrompt(bundleID: zoom)])
+        #expect(detector.lockedBundleID == zoom)
+    }
+
+    @Test("A deferred candidate whose capture ended before the gate opens is dropped")
+    func deferredCandidateGoneDoesNotPrompt() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // deferred
+        feed(&detector, [])                                        // call ended while closed
+        #expect(detector.promptGateOpened().isEmpty)
+        #expect(detector.lockedBundleID == nil)
+        // The episode ended cleanly: a new call prompts normally.
+        #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
+
+    @Test("An app capturing steadily across a gate close/open cycle never prompts")
+    func warmHoldAcrossGateCycleStaysQuiet() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [zoom])                                    // baseline: warm-holding
+        detector.promptGateClosed()
+        #expect(feed(&detector, [zoom]).isEmpty)
+        #expect(detector.promptGateOpened().isEmpty)
+        #expect(feed(&detector, [zoom]).isEmpty)                   // still no transition
+        #expect(detector.lockedBundleID == nil)
+    }
+
+    @Test("Back-to-back calls: the next call's edge during a recording prompts at the stop")
+    func backToBackCallEdgeDuringRecordingPromptsOnGateOpen() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        // Call 1: edge → prompt → the user records (the service consumes the
+        // lock and closes the gate).
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)
+        #expect(detector.consumeLock() == zoom)
+        detector.promptGateClosed()
+        // Call 1 ends mid-recording; call 2 starts before the recording stops.
+        #expect(feed(&detector, []).isEmpty)
+        #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
+        #expect(detector.debounceTimerFired(bundleID: zoom).isEmpty)  // deferred
+        // The recording stops → the gate reopens → call 2 prompts.
+        #expect(detector.promptGateOpened() == [.showPrompt(bundleID: zoom)])
+        #expect(detector.lockedBundleID == zoom)
+    }
+
+    @Test("An edge whose debounce is still pending at gate open prompts via the normal path")
+    func pendingDebounceAtGateOpenPromptsNormally() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])                                    // debounce in flight
+        #expect(detector.promptGateOpened().isEmpty)               // nothing deferred yet
+        #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])
+    }
+
+    @Test("Dismissal while a candidate is deferred suppresses its episode")
+    func dismissSuppressesDeferredCandidate() {
+        var detector = MeetingStartDetector()
+        feed(&detector, [])
+        detector.promptGateClosed()
+        feed(&detector, [zoom])
+        _ = detector.debounceTimerFired(bundleID: zoom)            // deferred
+        #expect(detector.dismiss().isEmpty)                        // nothing shown → no effects
+        #expect(detector.promptGateOpened().isEmpty)               // suppressed, not surfaced
+        // Suppression is episode-scoped: stop + restart re-prompts.
         feed(&detector, [])
         #expect(feed(&detector, [zoom]) == [.startDebounceTimer(bundleID: zoom)])
         #expect(detector.debounceTimerFired(bundleID: zoom) == [.showPrompt(bundleID: zoom)])

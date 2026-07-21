@@ -16,6 +16,15 @@ import Foundation
 /// service runs the timer and calls `debounceTimerFired`; the reducer confirms the
 /// app is still capturing and unsuppressed. This rejects momentary idle mic-pokes
 /// while a real call (which holds the mic continuously) survives.
+///
+/// **Prompt gate.** Observation never pauses for a recording session — a paused
+/// monitor is blind to the *next* call's capture edge during the current
+/// recording or its finalization, which is exactly where back-to-back meetings
+/// land (and a restart's fresh baseline would then swallow the already-capturing
+/// app for the whole call). Instead the service closes the gate while a session
+/// is spinning up or capturing; a candidate whose debounce matures behind a
+/// closed gate is *deferred* and surfaces the moment the gate reopens, provided
+/// it is still capturing and unsuppressed.
 struct MeetingStartDetector: Sendable {
     enum Effect: Equatable, Sendable {
         /// Begin (or restart) the sustain debounce for `bundleID`; on expiry the
@@ -39,6 +48,12 @@ struct MeetingStartDetector: Sendable {
     private(set) var lockedBundleID: String?
     /// The app whose debounce is in flight (not yet prompted).
     private var pendingBundleID: String?
+    /// Candidate whose debounce matured while the prompt gate was closed —
+    /// surfaced by `promptGateOpened` if it is still capturing then.
+    private var deferredBundleID: String?
+    /// False while the service holds the prompt gate closed (a recording session
+    /// is spinning up or actively capturing). Observation continues regardless.
+    private var promptsAllowed = true
     /// Apps whose *current* capture episode the user rejected (dismissed). Cleared
     /// when the app stops capturing, so a genuinely new later call re-prompts.
     private var suppressedEpisodes: Set<String> = []
@@ -82,10 +97,13 @@ struct MeetingStartDetector: Sendable {
             pendingBundleID = nil
             effects.append(.cancelDebounceTimer)
         }
+        if let deferred = deferredBundleID, stopped.contains(deferred) {
+            deferredBundleID = nil
+        }
 
-        // One prompt at a time: while something is shown or pending, don't chase a
-        // second candidate (a focus change can't move the lock either).
-        guard lockedBundleID == nil, pendingBundleID == nil else {
+        // One prompt at a time: while something is shown, pending, or deferred,
+        // don't chase a second candidate (a focus change can't move the lock either).
+        guard lockedBundleID == nil, pendingBundleID == nil, deferredBundleID == nil else {
             return effects
         }
 
@@ -109,8 +127,39 @@ struct MeetingStartDetector: Sendable {
               !suppressedEpisodes.contains(bundleID) else {
             return []
         }
+        guard promptsAllowed else {
+            // Gate closed (a session is spinning up / recording): hold the
+            // matured candidate; `promptGateOpened` surfaces it if it is still
+            // capturing then.
+            deferredBundleID = bundleID
+            return []
+        }
         lockedBundleID = bundleID
         return [.showPrompt(bundleID: bundleID)]
+    }
+
+    /// Close the prompt gate: a recording session is spinning up or actively
+    /// capturing. Edges are still tracked; matured candidates defer.
+    mutating func promptGateClosed() {
+        promptsAllowed = false
+    }
+
+    /// Reopen the prompt gate — the session stopped capturing (finalization may
+    /// still be running, but capture-first overlap means recording is possible
+    /// again, so prompting is too). A deferred candidate that is still capturing
+    /// and unsuppressed surfaces immediately: it sustained its debounce, by
+    /// definition, the whole time the gate was closed.
+    mutating func promptGateOpened() -> [Effect] {
+        promptsAllowed = true
+        guard let deferred = deferredBundleID else { return [] }
+        deferredBundleID = nil
+        guard previouslyCapturing.contains(deferred),
+              !suppressedEpisodes.contains(deferred),
+              lockedBundleID == nil else {
+            return []
+        }
+        lockedBundleID = deferred
+        return [.showPrompt(bundleID: deferred)]
     }
 
     /// The user dismissed the prompt — suppress this capture episode so we stay
@@ -119,16 +168,16 @@ struct MeetingStartDetector: Sendable {
         suppressCurrentEpisode()
     }
 
-    /// Forget the app the current lock is bound to, without suppressing its
-    /// episode. Called when a recording stops: back-to-back recordings keep the
-    /// input monitor down continuously, so the fresh-detector re-baseline that
-    /// used to clear the lock implicitly never happens — and a surviving lock
-    /// would bind the *next* recording's call-end monitoring to the previous,
-    /// already-ended call, auto-stopping it spuriously. The lock's only consumer
-    /// is call-end association at recording start, so clearing at stop is
-    /// behavior-preserving for every other flow.
-    mutating func releaseLock() {
-        lockedBundleID = nil
+    /// Take the lock's bundle ID and clear it, without suppressing its episode.
+    /// Called when a recording session begins: the lock's only consumer is
+    /// call-end association, and consuming it at start (rather than releasing at
+    /// stop) frees the reducer to track the *next* call's edge while this
+    /// recording runs — the back-to-back fix — and means a failed start can't
+    /// leave a promptless lock wedged for the rest of the call.
+    @discardableResult
+    mutating func consumeLock() -> String? {
+        defer { lockedBundleID = nil }
+        return lockedBundleID
     }
 
     private mutating func suppressCurrentEpisode() -> [Effect] {
@@ -142,6 +191,12 @@ struct MeetingStartDetector: Sendable {
             suppressedEpisodes.insert(pending)
             pendingBundleID = nil
             effects.append(.cancelDebounceTimer)
+        }
+        if let deferred = deferredBundleID {
+            // No prompt is showing for a deferred candidate, so no effects —
+            // but a dismissal must still veto its surfacing at gate open.
+            suppressedEpisodes.insert(deferred)
+            deferredBundleID = nil
         }
         return effects
     }

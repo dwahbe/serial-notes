@@ -128,6 +128,12 @@ final class MeetingDetectionService {
     @ObservationIgnored private var runningMeetingApps: Set<String> = []
     // Paused while voice enrollment holds the mic (so its own capture can't prompt).
     @ObservationIgnored private var isSuspended: Bool = false
+    // Mirrors the reducer's prompt gate (closed while a session is spinning up or
+    // actively capturing) — see syncPromptGate.
+    @ObservationIgnored private var isPromptGateClosed: Bool = false
+    // The bundle ID the start prompt had locked when the current session began,
+    // consumed from the reducer at gate close; call-end association reads it.
+    @ObservationIgnored private var pendingAssociationBundleID: String?
 
     // Post-meeting naming prompts, queued because the banner is a single panel
     // (see showSpeakerNamingPrompt).
@@ -271,28 +277,53 @@ final class MeetingDetectionService {
             }
         }
 
-        // A recording session in any phase owns the mic, so the start monitor pauses
-        // for its lifetime (and re-baselines after) — this both fixes the phantom
-        // prompt during the await-heavy start window and stops an idle app that was
-        // warm-holding the mic from re-prompting right after the recording ends.
-        updateInputMonitoring()
+        // The monitor keeps observing through the whole session — only prompt
+        // SURFACING is phase-gated. Sync AFTER the transition block, so a stop's
+        // call-end banner teardown can't hide a prompt the reopening gate just
+        // surfaced.
+        syncPromptGate()
+    }
+
+    /// The prompt gate closes while a session is spinning up or actively
+    /// capturing (`isStarting || isRecording`) and reopens at the stop press —
+    /// NOT after finalization: capture-first overlap supports recording the next
+    /// call while the previous one finalizes, and that window is exactly where
+    /// back-to-back meetings land.
+    private func syncPromptGate() {
+        let shouldClose = recordingState?.isStarting == true
+            || recordingState?.isRecording == true
+        guard shouldClose != isPromptGateClosed else { return }
+        isPromptGateClosed = shouldClose
+        if shouldClose {
+            // Consume (not just read) the lock: its only consumer is call-end
+            // association at recording start, and clearing it now frees the
+            // reducer to track the *next* call's edge mid-recording. A start
+            // that fails before capture leaves no wedged promptless lock.
+            pendingAssociationBundleID = startDetector.consumeLock()
+            startDetector.promptGateClosed()
+            clearDetected()
+        } else {
+            pendingAssociationBundleID = nil
+            handleStartEffects(startDetector.promptGateOpened())
+        }
     }
 
     // MARK: - Start detection (monitor → reducer → banner)
 
     /// Whether the input-capture monitor should be running: a known meeting app is
-    /// open, no recording session is in flight (start-up → active → finalizing),
-    /// detection isn't suspended, and the app can actually record (ASR models
-    /// ready). Gating the MONITOR on readiness — not just the prompt — matters:
-    /// a prompt suppressed after the reducer locked would wedge the lock for the
-    /// whole call; keeping the monitor down means no transitions are consumed at
-    /// all, and `modelReadinessChanged` re-baselines once models arrive. When no
-    /// meeting app is running nothing can be in a call, so the monitor and its
-    /// poll stay off entirely — no idle churn.
+    /// open, detection isn't suspended, and the app can actually record (ASR
+    /// models ready). Deliberately NOT gated on a recording session: observation
+    /// must run through recording + finalization, or the next call's capture edge
+    /// lands in a blind window and can never prompt — a restart's fresh baseline
+    /// swallows the already-capturing app (the back-to-back-meetings hole). The
+    /// reducer's prompt gate withholds *surfacing* instead (syncPromptGate).
+    /// Readiness still gates the MONITOR, not just the prompt: pre-models nothing
+    /// can record, and `modelReadinessChanged` re-baselines once models arrive.
+    /// When no meeting app is running nothing can be in a call, so the monitor
+    /// and its poll stay off entirely — no idle churn.
     private var shouldMonitorInput: Bool {
         !isSuspended
             && !runningMeetingApps.isEmpty
-            && recordingState?.isRecordingSessionActive != true
             && isReadyToRecord?() != false
     }
 
@@ -308,6 +339,12 @@ final class MeetingDetectionService {
     private func startInputMonitoring() {
         guard !inputCaptureMonitor.isRunning else { return }
         startDetector = MeetingStartDetector()
+        // A fresh reducer defaults to an open gate; if the monitor is (re)starting
+        // mid-session (e.g. models became ready during a recording), close it to
+        // match the current phase.
+        if isPromptGateClosed {
+            startDetector.promptGateClosed()
+        }
         inputCaptureMonitor.start()
     }
 
@@ -339,17 +376,17 @@ final class MeetingDetectionService {
                 startDebounceTask?.cancel()
                 startDebounceTask = nil
             case .showPrompt(let bundleID):
-                // Defense in depth: never surface a start prompt while a recording
-                // session is active or before the ASR models are ready (the
-                // monitor is gated on both, but the windows aren't all signalled
-                // through recordingStateChanged). A suppressed prompt must also
-                // RELEASE the reducer's lock — the lock was set when the prompt
-                // fired, and holding it promptless would block every later
-                // prompt until the app stops capturing.
-                guard recordingState?.isRecordingSessionActive != true,
+                // Defense in depth: never surface a start prompt while the
+                // prompt gate is closed or before the ASR models are ready (the
+                // reducer gates the former and the monitor the latter, but not
+                // every window is signalled through recordingStateChanged). A
+                // suppressed prompt must also CLEAR the reducer's lock — the
+                // lock was set when the prompt fired, and holding it promptless
+                // would block every later prompt until the app stops capturing.
+                guard !isPromptGateClosed,
                       isReadyToRecord?() != false,
                       let appName = Self.knownMeetingApps[bundleID]?.displayName else {
-                    startDetector.releaseLock()
+                    startDetector.consumeLock()
                     break
                 }
                 applyDetection(bundleID: bundleID, appName: appName)
@@ -413,12 +450,13 @@ final class MeetingDetectionService {
         guard meetingSettings?.autoStopAfterCallEnds == true else {
             return
         }
-        // Associate auto-stop with the app the start prompt locked onto — i.e. a
-        // meeting we actually detected (edge-triggered). A manual recording with no
-        // detected meeting (e.g. idle Zoom warm-holding the mic, no call) leaves the
-        // lock nil and gets no auto-stop, so it can't be stopped by that app merely
-        // releasing the mic.
-        guard let bundleID = startDetector.lockedBundleID,
+        // Associate auto-stop with the app the start prompt had locked when this
+        // session began (consumed into `pendingAssociationBundleID` at gate
+        // close) — i.e. a meeting we actually detected (edge-triggered). A manual
+        // recording with no detected meeting (e.g. idle Zoom warm-holding the
+        // mic, no call) leaves it nil and gets no auto-stop, so it can't be
+        // stopped by that app merely releasing the mic.
+        guard let bundleID = pendingAssociationBundleID,
               let appName = Self.knownMeetingApps[bundleID]?.displayName else {
             return
         }
@@ -441,10 +479,8 @@ final class MeetingDetectionService {
         if meetingDiagnostics.shouldWriteSidecar {
             recordingState?.attachMeetingDiagnosticsForCurrentStop(meetingDiagnostics)
         }
-        // The recording this lock produced is over. Release it so a follow-up
-        // recording started during this one's finalization can't inherit the
-        // association (see MeetingStartDetector.releaseLock).
-        startDetector.releaseLock()
+        // (The reducer's lock was already consumed at gate close — a follow-up
+        // recording can't inherit this association.)
         callEndGraceTask?.cancel()
         callEndGraceTask = nil
         callEndCountdownTask?.cancel()

@@ -108,10 +108,17 @@ struct TranscriptionTests {
                 "Transcript should contain recognizable words from input. Got: '\(transcript)'")
     }
 
+    @Test("Diarizer variant stays pinned to dihard3")
+    func diarizerVariantPin() {
+        // TranscriptionService.diarizerVariant is the single home of the
+        // variant; a different one silently shifts diarization accuracy.
+        #expect(TranscriptionService.diarizerVariant == .dihard3)
+    }
+
     @Test("LS-EEND diarizer processes audio and returns timeline")
     func diarization() async throws {
         let diarizer = LSEENDDiarizer()
-        try await diarizer.initialize(variant: .dihard3, computeUnits: .cpuOnly)
+        try await diarizer.initialize(variant: TranscriptionService.diarizerVariant, computeUnits: .cpuOnly)
 
         let (url, samples) = try Self.generateSpeech(
             "Good morning everyone. Today we will discuss the quarterly results. "

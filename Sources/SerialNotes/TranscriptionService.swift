@@ -136,6 +136,11 @@ actor TranscriptionService: TranscriptionSessionManaging {
 
     // MARK: - Model Lifecycle
 
+    /// The one home of the diarizer variant — both channels must share it, and
+    /// a different variant silently shifts diarization accuracy (pinned to what
+    /// 0.13.6's parameterless initialize() loaded implicitly; tests pin it too).
+    static let diarizerVariant: LSEENDVariant = .dihard3
+
     /// The production streaming-ASR construction path — tests pin its compute
     /// units, so route any new manager creation through here.
     static func makeStreamingAsrManager() -> StreamingEouAsrManager {
@@ -155,13 +160,11 @@ actor TranscriptionService: TranscriptionSessionManaging {
 
         // Explicit .cpuOnly (also FluidAudio's default, and its documented
         // fastest units for LS-EEND) so no load site inherits a GPU-capable
-        // default — see ModelComputePolicy. The variant is pinned to what
-        // 0.13.6's parameterless initialize() loaded implicitly: a different
-        // variant silently shifts diarization accuracy.
+        // default — see ModelComputePolicy.
         let sysDia = LSEENDDiarizer()
-        try await sysDia.initialize(variant: .dihard3, computeUnits: .cpuOnly)
+        try await sysDia.initialize(variant: Self.diarizerVariant, computeUnits: .cpuOnly)
         let micDia = LSEENDDiarizer()
-        try await micDia.initialize(variant: .dihard3, computeUnits: .cpuOnly)
+        try await micDia.initialize(variant: Self.diarizerVariant, computeUnits: .cpuOnly)
 
         sideStates[.mic]?.asr = micManager
         sideStates[.system]?.asr = sysManager

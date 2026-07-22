@@ -15,6 +15,9 @@ export default defineConfig({
   // The two /oauth/notion/*callback pages stay static — they only bounce the
   // browser into the app's custom URL scheme.
   adapter: vercel(),
+  // Astro 7 changed the default to 'jsx', which also strips whitespace between
+  // inline elements; keep the Astro 6 behavior so page text spacing is unchanged.
+  compressHTML: true,
   // Dev/preview only (Vercel ignores it): honor an externally assigned port
   // (e.g. Claude's preview harness) so parallel sessions don't fight over 4321.
   server: { port: Number(process.env.PORT ?? 4321) },

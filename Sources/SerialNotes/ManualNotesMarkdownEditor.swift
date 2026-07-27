@@ -524,11 +524,14 @@ struct ManualNotesMarkdownEditor: NSViewRepresentable {
             //
             // The mutation is also deferred out of this notification. On macOS 26
             // the text view's glyphs, selection highlight, and spell underlines
-            // render through a window-server-managed content layer, and editing
-            // storage attributes from inside the selection-change transaction can
-            // blank that layer for the selected lines (text invisible while
-            // highlighted) — every selection change during a mouse drag lands
-            // here, so this path must stay mutation-free.
+            // render through a window-server-managed private layer (AppKit's
+            // ContentLayer), and editing storage attributes from inside the
+            // selection-change transaction can blank that layer for the selected
+            // lines (text invisible while highlighted; the custom-drawn bullets
+            // survive because draw(_:) output goes to the view's own backing
+            // layer, not ContentLayer — that contrast is the fingerprint of this
+            // bug) — every selection change during a mouse drag lands here, so
+            // this path must stay mutation-free.
             var staleRanges: [NSRange] = []
             if let para, revealStateNeedsUpdate(in: para) { staleRanges.append(para) }
             if let previous, previous != para, revealStateNeedsUpdate(in: previous) {
